@@ -10,9 +10,14 @@
     width: 100%;
     min-width: 0;
 }
+.uav-regional-pending {
+    opacity: 0;
+    pointer-events: none;
+}
 .uav-replay .page-heading {
     margin-top: 0;
 }
+.uav-replay[aria-busy="true"] .uav-replay-section,
 .uav-replay[data-load-state="boot"] .uav-replay-section {
     visibility: hidden;
 }

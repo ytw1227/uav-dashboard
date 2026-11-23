@@ -3,18 +3,11 @@ import asyncio
 
 from nicegui import ui
 
-from .local_view import Console, value_text
+from .service import ServiceReader, ServiceReadError
 from .team_source import source_path, source_status
 
 
 STATES = {"queued": "대기", "running": "실행 중", "completed": "완료", "failed": "실패", "unavailable": "실행 제외"}
-RESULT_METRICS = (
-    ("search_connected_mean", "수색망 연결 유지율 CTR", "ratio"),
-    ("pdr", "패킷 전달률 PDR", "ratio"),
-    ("timely_pdr", "적시 전달률", "ratio"),
-    ("persistent_onsets", "수색망 단절 횟수", "회"),
-    ("persistent_cut_seconds", "지속 단절 누적시간", "s"),
-)
 
 
 def applied_pin(record):
@@ -39,10 +32,10 @@ class RegionalRuns:
         self.coverage_error = ""
         self.library = library
         self.labels = {card.region: card.label for card in library.cards}
-        self.viewer = Console(service_url)
+        self.api = ServiceReader(service_url)
         self.selection = None
         self.display_key = None
-        self.local_active = False
+        self.view_ticket = 0
         self.preferred = None
         self.requested_display = None
         self.user_selection = 0
@@ -57,7 +50,8 @@ class RegionalRuns:
         self.job_error = ""
 
     def render(self):
-        with ui.column().classes("w-full gap-2 rounded-lg border bg-white p-3").props("data-testid=team-region-actions"):
+        with ui.column().classes("w-full gap-2 rounded-lg bg-white p-3").style(
+                "border:1px solid #d0dce2").props("data-testid=team-region-actions"):
             with ui.row().classes("items-center gap-3"):
                 self.scope = ui.select({"selected": "선택 지역", "all": f"전체 {len(self.labels)}개 지역"},
                                        label="실행 범위", value="selected", on_change=self.update_button).props(
@@ -66,20 +60,14 @@ class RegionalRuns:
                 self.retry = ui.button("실패 지역만 재시도", on_click=self.retry_failed).props(
                     "outline no-caps data-testid=team-run-retry")
                 self.retry.set_visibility(False)
-            self.message = ui.label().props("role=status aria-live=polite data-testid=team-run-status").classes("text-sm")
-            self.eligible_note = ui.label().props("data-testid=team-run-eligibility").classes("text-sm")
-            with ui.expansion("지역별 진행 상황").props("dense data-testid=team-run-details").classes("w-full") as self.job_list:
+                self.versions = ui.select({}, label="표시할 비행 기록", on_change=self.choose_version).props(
+                    "outlined dense options-dense data-testid=team-result-choice").classes("min-w-64")
+                self.versions.set_visibility(False)
+            self.source_note = ui.label().classes("text-sm").style("color:#32566b").props("data-testid=team-result-source")
+            with ui.expansion("실행 관리").props("dense data-testid=team-run-details").classes("w-full"):
+                self.eligible_note = ui.label().props("data-testid=team-run-eligibility").classes("text-sm")
+                self.message = ui.label().props("role=status aria-live=polite data-testid=team-run-status").classes("text-sm")
                 self.job_items = ui.column().classes("w-full gap-1")
-            self.job_list.set_visibility(False)
-            self.versions = ui.select({}, label="표시할 비행 기록", on_change=self.choose_version).props(
-                "outlined dense options-dense data-testid=team-result-choice").classes("w-full max-w-lg")
-            self.versions.set_visibility(False)
-            self.source_note = ui.label().classes("text-sm").props("data-testid=team-result-source")
-        with ui.column().classes("w-full bg-white rounded-lg p-4 gap-3").props("data-testid=team-recorded-flight") as self.local:
-            self.summary = ui.row().classes("items-start gap-5")
-            self.viewer.load_status = ui.label().props("role=status")
-            self.viewer.detail = ui.column().classes("w-full")
-        self.local.set_visibility(False)
         if self.updates is None:
             self.message.set_text("새 비행을 저장하려면 결과 폴더를 연결해 대시보드를 실행하세요.")
             self.start.disable()
@@ -87,10 +75,19 @@ class RegionalRuns:
     def attach(self, archive, replay):
         self.archive, self.replay = archive, replay
         self.selection = self.library.initial_run
+        self.set_pending(True)
         self.code_updates.subscribe(self.update_button)
         self.update_button()
+        ui.timer(0.05, self.show_selection, once=True)
         ui.timer(0.15, self.refresh, once=True)
         ui.timer(2, self.refresh)
+
+    def set_pending(self, waiting):
+        # Keep the map's measured size while its previous frame is hidden.
+        if waiting:
+            self.archive.classes(add="uav-regional-pending").props("inert")
+        else:
+            self.archive.classes(remove="uav-regional-pending").props(remove="inert")
 
     @property
     def card(self):
@@ -182,7 +179,6 @@ class RegionalRuns:
         self.batch_seen = batch
         self.update_button()
         self.retry.set_visibility(bool(batch and batch.get("failed") and not batch.get("active")))
-        self.job_list.set_visibility(bool(batch))
         self.job_items.clear()
         message = ""
         if batch:
@@ -210,7 +206,11 @@ class RegionalRuns:
             if current and applied_pin(current):
                 records[region] = {"sha": current["sha"], "metrics": {}, "pin": applied_pin(current)}
         if records:
-            runs = self.viewer.api.runs()["runs"]
+            try:
+                runs = self.api.runs()["runs"]
+            except ServiceReadError:
+                # Registry refresh can lag a published recording. Its pinned replay remains readable.
+                return records, False
             by_pin = {(row["run_id"], row.get("bundle_revision")): row for row in runs}
             for record in records.values():
                 row = by_pin.get(record["pin"])
@@ -266,22 +266,41 @@ class RegionalRuns:
         self.requested_display = None
         previous = self.selection
         self.selection = key
-        if previous != key:
+        if self.library.by_flight.get(previous) is not self.card:
             self.preferred = None
         self.update_button()
-        await self.show_selection(restart=restart, navigate=True)
+        await self.show_selection(restart=restart)
 
-    def archive_state(self, key):
-        # Ignore events emitted by the still-mounted archive while a new flight is visible.
-        if self.local_active or key == self.selection or not self.card or key not in self.library.by_flight:
+    def replay_state(self, state):
+        # Only accept a change of flight mode from the currently mounted region/edition.
+        card = self.card
+        if (not card or state.get("ticket") != self.view_ticket or state.get("loading")
+                or state.get("read_error") or state.get("region") != card.region):
             return
-        if self.library.by_flight[key].region != self.card.region:
+        context = state.get("team_context")
+        mode = state.get("mode")
+        if mode not in card.flights:
             return
-        self.selection = key
-        self.library.sync_selection(*key)
-        self.preferred = "archive"
+        flight = card.flights[mode]
+        shown = state.get("run_id"), state.get("revision")
+        if context:
+            if not self.display_choice or self.display_choice.split("/")[0] != context:
+                return
+            expected = tuple(self.display_choice.split("/")) if mode == "v21" else flight.key
+        else:
+            if self.display_choice not in ("archive", None):
+                return
+            expected = flight.key
+        if shown != expected or flight.key == self.selection:
+            return
+        self.selection = self.library.select_mode_for_result(card.region, mode)
+        self.display_key = self.selection, self.display_choice
         self.user_selection += 1
         self.requested_display = None
+        if self.recorded_source:
+            self.show_recorded_version()
+        else:
+            self.show_archive_source(card.label, mode)
         self.update_button()
 
     async def choose_version(self, event):
@@ -290,10 +309,13 @@ class RegionalRuns:
         self.preferred = event.value
         self.user_selection += 1
         self.requested_display = None
-        await self.show_selection(navigate=True)
+        await self.show_selection()
 
     def show_recorded_version(self):
         region, sha, interval = self.recorded_source
+        if self.mode == "nominal":
+            self.show_archive_source(region, "nominal")
+            return
         source = f"표시 중 · {region} · 실행한 팀 코드 {sha[:7]}"
         if interval is not None:
             source += f" · 판단 주기 {interval:g}초"
@@ -303,7 +325,11 @@ class RegionalRuns:
         if self.source_note.text != source:
             self.source_note.set_text(source)
 
-    async def show_selection(self, *, restart=False, navigate=False):
+    def show_archive_source(self, region, mode):
+        label = "기본 대형" if mode == "nominal" else "재배치 적용"
+        self.source_note.set_text(f"표시 중 · {region} · 기존 {label} 비행")
+
+    async def show_selection(self, *, restart=False):
         card = self.card
         if not card:
             return
@@ -314,13 +340,13 @@ class RegionalRuns:
         if epoch != self.generation or key != self.selection:
             return
         options, records = {}, {}
-        if mode == "v21":
-            for record in history:
-                pin = applied_pin(record)
-                if pin:
-                    name = "/".join(pin)
-                    records[name] = record
-                    options[name] = f"팀 {record['sha'][:7]} · {str(record.get('finished_at') or '')[:19]}"
+        for record in history:
+            pin = applied_pin(record)
+            if pin:
+                name = "/".join(pin)
+                records[name] = record
+                finished = str(record.get("finished_at") or "")[:19].replace("T", " ")
+                options[name] = f"팀 {record['sha'][:7]} · {finished} UTC"
         options["archive"] = "기존 대시보드 비행"
         active = self.preferred if self.preferred in options else next(iter(options))
         self.updating_choices = True
@@ -338,53 +364,34 @@ class RegionalRuns:
             return
         self.display_key = identity
         self.recorded_source = None
-        self.viewer.load_generation += 1
-        self.viewer.query_generation += 1
-        self.viewer.plot_generation += 1
-        self.viewer.flight_generation += 1
-        self.viewer.clock_fields = None
-        self.viewer.detail.clear()
-        self.local_active = active != "archive"
-        self.archive.set_visibility(not self.local_active)
-        self.local.set_visibility(self.local_active)
-        self.summary.clear()
-        if not self.local_active:
-            original = "기본 대형" if mode == "nominal" else "재배치 적용"
-            note = f"표시 중 · {card.label} · 기존 {original} 비행"
-            if history and mode == "nominal":
-                note += " · 새 팀 비행은 ‘예측·재배치 적용’에서 볼 수 있습니다."
-            self.source_note.set_text(note)
-            if restart:
-                await self.replay.open_run(*key)
-            elif navigate or self.replay.state.get("run_id") not in (None, key[0]):
-                await self.replay.select_run(*key)
-            return
-        record = records[active]
-        pin = applied_pin(record)
-        self.replay.client.run_javascript("window.uavReplay?.suspend()")
-        self.source_note.set_text(f"표시 중 · {card.label} · 팀 실행 결과 확인 중")
-        self.viewer.load_status.set_text("기록된 실행 버전과 지도를 확인하는 중")
+        self.view_ticket += 1
+        ticket = self.view_ticket
+        self.set_pending(True)
+        self.archive.set_visibility(True)
+        self.source_note.set_text(f"{card.label} · 비행 기록을 불러오는 중")
         try:
-            # The commit shown beside the flight must be from this exact recorded bundle.
-            manifest = await asyncio.to_thread(self.viewer.api.manifest, *pin)
-            if identity != self.display_key:
+            if active == "archive":
+                open_record = self.replay.open_run if restart else self.replay.select_run
+                state = await open_record(*key, ticket=ticket)
+            else:
+                record = records[active]
+                pin = applied_pin(record)
+                state = await self.replay.open_team(card.region, pin, record["sha"], mode, ticket, restart)
+            if ticket != self.view_ticket:
                 return
-            if (manifest.get("team_commit") != record["sha"] or manifest.get("region") != card.region
-                    or (manifest.get("run_id"), manifest.get("bundle_revision")) != pin):
-                raise ValueError("저장된 팀 버전·지역·실행 번호가 선택한 결과와 다릅니다.")
-            self.recorded_source = (card.label, manifest["team_commit"], manifest.get("decision_interval_s"))
-            self.show_recorded_version()
-            metrics = manifest_metrics(manifest)
-            with self.summary:
-                for metric, label, unit in RESULT_METRICS:
-                    if metric in metrics:
-                        with ui.column().classes("gap-0"):
-                            ui.label(label).classes("text-caption")
-                            ui.label(value_text(metrics[metric], unit)).classes("text-subtitle1 font-semibold")
-            await self.viewer.open_run(manifest, full_flight=True, heading=f"{card.label} · 팀 재배치 정책 비행")
-            if identity == self.display_key and self.viewer.pin != pin:
-                self.display_key = None
-        except (OSError, ValueError, RuntimeError, KeyError) as exc:
-            if identity == self.display_key:
-                self.viewer.load_status.set_text(f"이 비행을 열 수 없습니다 · {exc}")
-                self.display_key = None
+            if not state or state.get("read_error") or state.get("open_error"):
+                raise ValueError((state or {}).get("open_error") or "비행 기록을 읽을 수 없습니다.")
+            expected = applied_pin(records[active]) if active != "archive" and mode == "v21" else key
+            if ((state.get("run_id"), state.get("revision")) != expected or state.get("ticket") != ticket
+                    or state.get("loading") or state.get("region") != card.region or state.get("mode") != mode):
+                raise ValueError("선택한 비행과 재생 자료가 일치하지 않습니다.")
+            self.set_pending(False)
+            if active == "archive":
+                self.show_archive_source(card.label, mode)
+            else:
+                self.recorded_source = (card.label, record["sha"], state.get("team_interval"))
+                self.show_recorded_version()
+        except (OSError, ValueError, RuntimeError, KeyError, TimeoutError) as exc:
+            if ticket == self.view_ticket:
+                self.archive.set_visibility(False)
+                self.source_note.set_text(f"{card.label} · 비행을 열 수 없습니다. 지역 카드를 눌러 다시 시도하세요. {exc}")

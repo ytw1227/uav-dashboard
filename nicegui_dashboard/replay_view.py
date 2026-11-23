@@ -49,12 +49,31 @@ def _controller() -> str:
     keep the analytic sections and their original keyboard/camera/time logic.
     """
     code = (SOURCE / 'app.js').read_text(encoding='utf-8-sig')
+    code = code.replace('const pair = pairedFlights(S.runs, row);',
+                        'const pair = teamPair(row) || pairedFlights(S.runs, row);')
+    code = code.replace('const pair = pairedFlights(S.runs, selectedCatalogRun());',
+                        'const pair = teamPair(selectedCatalogRun()) || pairedFlights(S.runs, selectedCatalogRun());')
+    code = code.replace("else $('flightTabNote').textContent = '';",
+                        "else $('flightTabNote').textContent = teamPair(row) ? '기본 대형은 기존 비행 기록입니다.' : '';")
+    code = code.replace('const model = isRepresentative(manifest)',
+                        "const model = m.adapter_id === 'team-halfsec' || isRepresentative(manifest)")
+    code = code.replace("$('runEyebrow').textContent = `",
+                        "$('runEyebrow').textContent = m.adapter_id === 'team-halfsec' ? '팀 시뮬레이션 비행' : `")
+    code = code.replace("$('revisionBadge').textContent = m.split",
+                        "$('revisionBadge').textContent = m.team_commit ? '팀 코드 ' + m.team_commit.slice(0,7) : m.split")
+    code = code.replace('S.manifest = manifest;', "S.manifest = manifest; if(S.tab==='performance')loadPerformance();")
+    code = code.replace('const request=++performanceRequest;',
+                        'const request=++performanceRequest;if(teamContext())return teamModel(teamManifest(),selectedCatalogRun());')
+    code = code.replace(" $('pairedComparison').classList.toggle('hidden', !pair);",
+                        " if(teamPair(row)){S.compareRequest=null;return teamComparison(teamPair(row),row);}\n"
+                        " $('pairedComparison').classList.toggle('hidden', !pair);")
     analytic = _between(code, 'function persistentRecoveryStats(', 'async function share(')
     analytic = analytic.replace('renderRuns();', 'publishSelection();')
     # Archival exports are managed by the local operations page. The shared
     # package's header 'shareButton' is absent from the replay surface.
     analytic = re.sub(r"\$\('shareButton'\)\.title=[^;]+;", '', analytic)
     return '\n'.join([
+        'import {teamContext,teamDescriptor,teamManifest,teamPair,setTeamFlight} from "./team_flight.js";',
         code[:code.index('async function api(')].replace("'./main_plotly.js'", "'./map_display.js'"),
         'const api = (url, options) => window.__PORTABLE__.api(url, options);',
         _between(code, 'function runAPI(', 'function serviceState('),
@@ -104,21 +123,24 @@ def replay_style():
 
 @app.get(BASE + '/{source}/{name}', include_in_schema=False)
 def replay_module(source: str, name: str):
+    from .team_semantics import adapt
     if source not in {'S', 'B'}:
         raise HTTPException(404)
     if name == 'app.js':
         body = _controller()
     elif name == 'flight_metrics.js':
         body = _flight_metrics()
-    elif name in {'bootstrap.js', 'map_display.js', 'evaluation_read.js'}:
+    elif name in {'bootstrap.js', 'map_display.js', 'evaluation_read.js', 'team_flight.js', 'team_readouts.js'}:
         body = (ASSETS / name).read_text(encoding='utf8')
     elif name == 'margin_data.js':
         body = f"export {{marginRecords, warningThresholds}} from '/part2/data/{source}/margins.js';"
     elif re.fullmatch(r'[a-z_0-9]+\.js', name) and (SOURCE / name).is_file():
         body = (SOURCE / name).read_text(encoding='utf-8-sig')
+        if name == 'library.js':
+            body = body.replace("return m.adapter_id==='final-v1'", "return m.adapter_id==='team-halfsec'||m.adapter_id==='final-v1'")
     else:
         raise HTTPException(404)
-    return Response(body, media_type='text/javascript', headers={'Cache-Control': 'no-cache'})
+    return Response(adapt(name, body), media_type='text/javascript', headers={'Cache-Control': 'no-cache'})
 
 
 @dataclass
@@ -134,12 +156,15 @@ class ReplayView:
         return await self.client.run_javascript(
             f'await window.uavReplayReady; return await {call}', timeout=90)
 
-    async def select_run(self, run_id: str, revision: str):
-        return await self._command('selectRun', run_id, revision)
+    async def select_run(self, run_id: str, revision: str, ticket: int = 0):
+        return await self._command('selectRun', run_id, revision, ticket)
 
-    async def open_run(self, run_id: str, revision: str):
+    async def open_run(self, run_id: str, revision: str, ticket: int = 0):
         """A deliberate map-card click restarts the pinned flight at its beginning."""
-        return await self._command('openRun', run_id, revision)
+        return await self._command('openRun', run_id, revision, ticket)
+
+    async def open_team(self, region, pin, sha, mode, ticket, restart):
+        return await self._command('openTeam', region, *pin, sha, mode, ticket, restart)
 
     async def set_tab(self, tab: str):
         if tab not in {'map', 'compare', 'performance'}:
@@ -162,7 +187,7 @@ class ReplayView:
                 await result
 
 
-def render_replay(source: str, on_state=None, initial_run=None, initial_revision=None) -> ReplayView:
+def render_replay(source: str, on_state=None, initial_run=None, initial_revision=None, *, defer_initial=False) -> ReplayView:
     if source not in {'S', 'B'}:
         raise ValueError('Replay requires the S or B package')
     view = ReplayView(ui.context.client, source, on_state)
@@ -180,7 +205,8 @@ def render_replay(source: str, on_state=None, initial_run=None, initial_revision
             # Trusted original UI templates from the fixed S release; never user input.
             ui.html(fragment, sanitize=False).classes('uav-replay-section')
     ui.on('uav_replay_state', view.receive)
-    options = json.dumps({'source': source, 'run': initial_run, 'revision': initial_revision}, ensure_ascii=True)
+    options = json.dumps({'source': source, 'run': initial_run, 'revision': initial_revision,
+                          'deferInitial': defer_initial}, ensure_ascii=True)
     # The connection and the component DOM both exist before importing the renderer.
     view.client.run_javascript(f'''
         window.uavReplayReady = import("{BASE}/{source}/bootstrap.js").then(m => m.mount({options}));

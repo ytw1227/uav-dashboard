@@ -39,12 +39,18 @@ class TeamBundleTests(unittest.TestCase):
             beacon_rx=np.array([[.5,0,2,-67,31]]))
 
     def test_published_record_and_native_clocks(self):
+        self.record.update(map_input_source="dashboard_demonstration", source_study_role="legacy_protected",
+                           split="external_demonstration", model_threshold=.4)
         result = publish_capture(self.record,self.a,self.scene,self.root/"store")
         from dashboard_contract.validation import validate_bundle
         from dashboard_service.query import events, timeline
         bundle = self.root/"store"/"bundles"/result["run_id"]/result["revision"]
         manifest = validate_bundle(bundle)
         self.assertEqual(manifest["team_commit"],self.record["team_commit"])
+        self.assertEqual(manifest["model_threshold"],.4)
+        self.assertEqual(manifest["map_input_source"],"dashboard_demonstration")
+        self.assertEqual(manifest["source_study_role"],"legacy_protected")
+        self.assertEqual(manifest["split"],"external_demonstration")
         self.assertEqual(manifest["final_metrics"]["pdr"],.9)
         self.assertEqual(manifest["final_metrics"]["timely_pdr"],.7)
         loaded = timeline(manifest,bundle,0,2,1)
@@ -55,6 +61,16 @@ class TeamBundleTests(unittest.TestCase):
         self.assertEqual(loaded["observations"][0]["observer_id"],"uav-2")
         cuts = events(manifest,bundle,event_type="persistent_search_outage")["events"]
         self.assertEqual([(e["start_s"],e["end_s"]) for e in cuts],[(.5,1.5)])
+        from nicegui_dashboard.team_incidents import read_incident
+        book = read_incident(bundle, manifest, "book", cuts)
+        self.assertEqual(book["revision"], result["revision"])
+        case, = book["events"]
+        self.assertEqual(case["id"], cuts[0]["id"])
+        self.assertEqual(case["window"], [0., 2.])
+        self.assertEqual(case["recovery_s"], 1.5)
+        self.assertEqual(case["search_groups"], [["uav-0"], ["uav-1"]])
+        self.assertEqual(len(case["crossing_lost_links"]), 2)
+        self.assertEqual(case["interventions"], [])
 
     def test_partial_diagnostic_and_inconsistent_counts_never_publish(self):
         for changes in (dict(max_seconds_requested=2.), dict(onsets=2), dict(network_fraction=.75),

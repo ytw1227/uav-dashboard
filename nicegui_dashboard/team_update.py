@@ -73,6 +73,36 @@ class TeamUpdates:
     def start(self, region, sha):
         return self.start_many([region], sha)
 
+    def resume_demo_regions(self, batch_id, sha):
+        """Extend an already requested all-region batch when its demo scenes become runnable."""
+        def verify_latest(conn):
+            latest = conn.execute("SELECT * FROM batches ORDER BY id DESC LIMIT 1").fetchone()
+            if latest is None or latest["id"] != batch_id or latest["sha"] != sha:
+                raise ValueError("요청한 전체 실행의 번호 또는 팀 코드 버전이 달라졌습니다.")
+            return latest
+
+        with self.connection() as conn:
+            batch = verify_latest(conn)
+        source = Path(batch["source"])
+        source_status(source)
+        approved = map_coverage(source, sha, Path(batch["core"]))
+        with self.connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            verify_latest(conn)
+            rows = conn.execute("SELECT id,region,state FROM jobs WHERE batch=?", (batch_id,)).fetchall()
+            if {r["region"] for r in rows} != set(approved):
+                raise ValueError("전체 지역 실행에서만 제외됐던 시연 지도를 이어갈 수 있습니다.")
+            added = [r["id"] for r in rows if r["state"] == "unavailable"
+                     and approved[r["region"]]["eligible"] and approved[r["region"]]["input_mode"] == "dashboard_demo"]
+            conn.executemany("UPDATE jobs SET state='queued',phase='queued',message=?,finished_at=NULL "
+                             "WHERE id=? AND state='unavailable'", [
+                                 ("시연 지도를 확인해 같은 팀 버전으로 실행 대기 중", job) for job in added])
+        if added:
+            # The old worker queries this same queue after each flight. An extra
+            # wake is harmless under its OS lock and covers a concurrent worker exit.
+            self._launch()
+        return len(added)
+
     def coverage(self, sha, *, refresh=False):
         path = source_path()
         if not SHA.fullmatch(str(sha)) or source_status(path)["commit"] != sha:
@@ -276,5 +306,13 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--state-root", type=Path, required=True)
+    parser.add_argument("--resume-demo-batch", type=int, help="Extend exactly this existing full-region batch")
+    parser.add_argument("--commit", help="Team commit of the existing batch")
     opts = parser.parse_args()
-    TeamUpdates(opts.output_root, opts.state_root, resume=False).run_worker()
+    if (opts.resume_demo_batch is None) != (opts.commit is None):
+        parser.error("--resume-demo-batch and --commit must be provided together")
+    updates = TeamUpdates(opts.output_root, opts.state_root, resume=False)
+    if opts.resume_demo_batch is None:
+        updates.run_worker()
+    else:
+        print(json.dumps({"resumed": updates.resume_demo_regions(opts.resume_demo_batch, opts.commit)}))

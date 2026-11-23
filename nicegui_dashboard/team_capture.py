@@ -13,7 +13,10 @@ import re
 import sys
 import tempfile
 import time
+from functools import partial
 from unittest.mock import patch
+
+from .team_demo import demo_survey, demo_survey_supported, needs_demo, resolve_demo_scene, study_roles
 
 
 def utc():
@@ -117,19 +120,37 @@ def capture(code, core, spec, commit, max_seconds=None):
         probes = FlightMeasurements()
         context_data = {}
         team_flight = release.MainFlight
+        catalog = json.loads((core / "dashboard_execution/selected_maps.json").read_text(encoding="utf-8"))
+        selected = [card for card in catalog["maps"] if card["key"] == spec["region"]]
+        if len(selected) != 1:
+            raise ValueError("시연할 지도 한 곳을 지역 카드에서 확인할 수 없습니다.")
+        card = selected[0]
+        context_source = Path(context.__file__).read_text(encoding="utf-8-sig")
+        roles = study_roles(context_source)
 
         class RecordedFlight(team_flight):
             def survey(self, region, direction):
                 # The team release may switch between two independently hashed registries.
                 entry = context.registry().get(region)
-                if entry is None:
-                    raise ValueError(f"현재 팀 버전의 지도 레지스트리에 {region}이 없습니다.")
-                scene = (context.LEGACY / entry["path"]).resolve()
-                if not scene.is_file() or digest(scene) != entry["sha256"]:
-                    raise ValueError(f"팀 지도 {region}의 파일 또는 체크섬을 확인하세요.")
-                data = super().survey(region, direction)
-                context_data.update(scene=scene, map_sha=entry["sha256"],
-                                    split=entry["study_role"], altitude=float(data[1].altitude_m))
+                if region != card["key"] or (entry is not None and entry["sha256"] != card["sha256"]):
+                    raise ValueError("기존 지역 카드와 팀 실행의 지도가 다릅니다.")
+                if needs_demo(entry, roles):
+                    if not demo_survey_supported(context_source) or self.survey_factory is not context.survey_for:
+                        raise ValueError("팀의 지도 준비 방식이 변경되어 시연 지도 연결을 다시 검증해야 합니다.")
+                    scene = resolve_demo_scene(core, card)
+                    factory = partial(demo_survey, context, card, scene)
+                    with patch.object(self, "survey_factory", factory):
+                        data = super().survey(region, direction)
+                    source, split = "dashboard_demonstration", "external_demonstration"
+                else:
+                    scene = (context.LEGACY / entry["path"]).resolve()
+                    if not scene.is_file() or digest(scene) != entry["sha256"]:
+                        raise ValueError(f"팀 지도 {region}의 파일 또는 체크섬을 확인하세요.")
+                    data = super().survey(region, direction)
+                    source, split = "team_registry", entry["study_role"]
+                context_data.update(scene=scene, map_sha=card["sha256"], split=split,
+                                    map_input_source=source, source_study_role=entry.get("study_role") if entry else None,
+                                    altitude=float(data[1].altitude_m))
                 return data
 
             def navigator(self, *args):
@@ -181,11 +202,6 @@ def capture(code, core, spec, commit, max_seconds=None):
             raise ValueError("팀 비행 기록 시각, 제어기 또는 물리·패킷 검사 결과가 일치하지 않습니다.")
         if len(frames["plan_frames"]) != len(frames["scores"]) or len(frames["support_counts"]) != len(frames["scores"]):
             raise ValueError("팀 예측 시각과 점수 개수가 다릅니다.")
-        selected = core / "dashboard_execution/selected_maps.json"
-        if selected.is_file():
-            previous = {m["key"]:m["sha256"] for m in json.loads(selected.read_text(encoding="utf-8"))["maps"]}
-            if spec["region"] in previous and previous[spec["region"]] != context_data["map_sha"]:
-                raise ValueError("기존 지역 카드와 팀 실행의 지도 체크섬이 다릅니다.")
         final, _ = context_data["nav"].motion.positions()
         archive = {k:frames[k] for k in ("network", "links", "positions", "margin_db", "applied_offsets",
                                           "plan_frames", "scores", "support_counts")}
@@ -196,6 +212,7 @@ def capture(code, core, spec, commit, max_seconds=None):
         row.update(team_commit=commit, started_at=started, completed_at=completed,
                    full_mission_budget_s=MAX_MISSION, max_seconds_requested=max_seconds,
                    altitude_m=context_data["altitude"], split=context_data["split"],
+                   map_input_source=context_data["map_input_source"], source_study_role=context_data["source_study_role"],
                    map_sha256=context_data["map_sha"], team_capture_version="1",
                    model_sha256=release_meta["sha256"], model_threshold=release_meta["threshold"])
         return row, archive, context_data["scene"]

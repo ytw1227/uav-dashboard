@@ -229,10 +229,23 @@ def publish_capture(record, arrays, scene_path, output_root):
     outages = validate_capture(record, arrays)
     scene = make_scene(Path(scene_path), record)
     spec, sha = record["spec"], record["team_commit"]
+    map_input = record.get("map_input_source", "team_registry")
+    original_role = record.get("source_study_role", record["split"])
+    if map_input not in ("team_registry", "dashboard_demonstration"):
+        raise ValueError("비행에 사용한 지도의 입력 출처를 확인할 수 없습니다.")
+    if map_input == "dashboard_demonstration" and (
+            record["split"] != "external_demonstration" or "source_study_role" not in record):
+        raise ValueError("시연 지도 결과의 구분 또는 원래 연구 용도가 기록되지 않았습니다.")
     identity = dict(spec=spec, team_commit=sha, map_hash=record["map_sha256"], model_sha256=record["model_sha256"],
                     started_at=record["started_at"], controller=record["controller"])
     fingerprint = hashlib.sha256(encode(identity)).hexdigest()
-    rid, rev = "team-" + fingerprint[:28], "rev-" + hashlib.sha256(encode([fingerprint,record["team_capture_version"],record["completed_at"]])).hexdigest()[:24]
+    revision_inputs = [fingerprint, record["team_capture_version"], record["completed_at"]]
+    threshold = record.get("model_threshold")
+    if type(threshold) in (int, float) and math.isfinite(threshold) and 0 <= threshold <= 1:
+        revision_inputs.append({"model_threshold": threshold})
+    else:
+        threshold = None
+    rid, rev = "team-" + fingerprint[:28], "rev-" + hashlib.sha256(encode(revision_inputs)).hexdigest()[:24]
     fleet = [dict(id=f"uav-{i}", role="search" if i<record["search_drones"] else "relay") for i in range(record["total_drones"])]
     defs = {}
     for key,(label,unit,formula) in METRICS.items():
@@ -254,6 +267,7 @@ def publish_capture(record, arrays, scene_path, output_root):
             model_id=record["controller"],model_sha256=record["model_sha256"],controller=record["controller"],mode="v21_halfsec",
             config_hash=hashlib.sha256(encode([spec,sha,record["model_sha256"]])).hexdigest(),
             region=spec["region"],seed=spec["seed"],kind=spec["kind"],direction=spec["direction"],split=record["split"],
+            map_input_source=map_input,source_study_role=original_role,
             mission_completed=record["mission_completed"],map_id=spec["region"],map_hash=record["map_sha256"],scene_ref="scene.json",
             decision_interval_s=record["decision_interval_s"],simulation_end_s=record["duration_s"],fleet=fleet,
             clocks=dict(decision_dt_s=.5,rf_dt_s=.5,motion_dt_s=.1,position_sample_dt_s=.5),clock_definitions={
@@ -268,6 +282,8 @@ def publish_capture(record, arrays, scene_path, output_root):
             capabilities={key:dict(status="available") for key in ("positions","scene","links","decisions","rf_observations","events","metrics")},
             validation_report=dict(counts=counts,safety_passed=record["safety_passed"],packet_conserved=record["packet_conserved"]),
             artifacts=artifacts)
+        if threshold is not None:
+            manifest["model_threshold"] = threshold
         (bundle/"manifest.json").write_bytes(encode(manifest))
         (bundle/"READY").write_bytes(encode(dict(manifest_sha256=digest(bundle/"manifest.json"))))
         store = load_store(SERVICE_PROJECT, output_root, quota_gib=quota)

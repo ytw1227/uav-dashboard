@@ -69,6 +69,7 @@ def serve_workspace(args, digests):
     from .replay_view import render_replay
     from .team_source import TeamSourceError, source_path, source_status
     from .team_update import TeamUpdates
+    from .team_replay_data import register_team_replay_routes
     from .local_view import install_assets
 
     team_updates = TeamCodeUpdates()
@@ -85,6 +86,8 @@ def serve_workspace(args, digests):
 
     media = PackageMedia({"S": args.s, "B": args.b}, args.codec_dir, digests)
     register_package_routes(app, media)
+    if args.data_root:
+        register_team_replay_routes(app, args.data_root)
     app.on_shutdown(media.close)
 
     async def playback_page(source):
@@ -127,11 +130,10 @@ def serve_workspace(args, digests):
 
             def on_state(state):
                 rid, revision = state.get("run_id"), state.get("revision")
-                if rid in package.catalog["entries"] and revision == package.catalog["entries"][rid]["revision"]:
-                    if team:
-                        team.archive_state((rid, revision))
-                    else:
-                        library.sync_selection(rid, revision)
+                if team:
+                    team.replay_state(state)
+                elif rid in package.catalog["entries"] and revision == package.catalog["entries"][rid]["revision"]:
+                    library.sync_selection(rid, revision)
                 if state.get("tab") in TABS:
                     update_nav(state["tab"])
 
@@ -153,7 +155,8 @@ def serve_workspace(args, digests):
                             nav[key] = ui.button(label, on_click=select_tab(key)).props(f"flat no-caps data-uav-tab={key}")
                     update_nav("map")
                     rid, revision = library.initial_run
-                    replay = render_replay(source, on_state=on_state, initial_run=rid, initial_revision=revision)
+                    replay = render_replay(source, on_state=on_state, initial_run=rid, initial_revision=revision,
+                                           defer_initial=team is not None)
                 if team:
                     team.attach(archive, replay)
 

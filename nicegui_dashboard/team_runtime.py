@@ -1,6 +1,5 @@
 """Build a private runnable snapshot from a local team commit and the installed research data."""
 from contextlib import contextmanager
-import ast
 import hashlib
 import json
 import os
@@ -167,6 +166,8 @@ def _verify_active_model(code, source, blobs):
 
 def map_coverage(source, sha, core):
     """Preflight the same registry order and map identity required by team_capture."""
+    from .team_demo import demo_survey_supported, resolve_demo_scene, study_roles
+
     base = native_path(Path(core) / "code")
     blobs, deleted = _inventory(source, sha)
 
@@ -184,26 +185,10 @@ def map_coverage(source, sha, core):
 
     primary = registry("fast_halfsec/artifacts/map_registry.json")
     secondary = registry("final_v1/halfsec_expanded/artifacts/map_registry.json")
-    # Read the installed team's literal study-role guard. A later version can
-    # expand the cohort without keeping the previous release's roles in the UI.
-    # If the guard changes shape, final eligibility is checked during the flight.
-    roles = None
-    context = read("fast_halfsec/context.py") if "fast_halfsec/context.py" in blobs else None
-    if context:
-        tree = ast.parse(context)
-        for method in tree.body:
-            if not isinstance(method, ast.FunctionDef) or method.name != "survey_for":
-                continue
-            for stmt in method.body:
-                if not isinstance(stmt, ast.If) or not any(isinstance(s, ast.Raise) for s in stmt.body):
-                    continue
-                cmp = stmt.test
-                if (isinstance(cmp, ast.Compare) and len(cmp.ops) == 1 and isinstance(cmp.ops[0], ast.NotIn)
-                        and isinstance(cmp.left, ast.Subscript) and isinstance(cmp.left.slice, ast.Constant)
-                        and cmp.left.slice.value == "study_role" and isinstance(cmp.comparators[0], (ast.Tuple, ast.List, ast.Set))
-                        and all(isinstance(i, ast.Constant) and isinstance(i.value, str) for i in cmp.comparators[0].elts)):
-                    roles = {i.value for i in cmp.comparators[0].elts}
-                    break
+    context_file = "fast_halfsec/context.py"
+    context_source = read(context_file).decode("utf-8-sig") if context_file in blobs else ""
+    roles = study_roles(context_source)
+    demo_supported = demo_survey_supported(context_source)
     paths = read("handoff_paths.json")
     old = json.loads(paths)["source_root"].replace("\\", "/").rstrip("/") if paths else ""
     maps = json.loads((Path(core) / "dashboard_execution/selected_maps.json").read_text(encoding="utf-8"))["maps"]
@@ -211,13 +196,22 @@ def map_coverage(source, sha, core):
     for card in maps:
         region = card["key"]
         entry = primary.get(region) or secondary.get(region)
+        role = entry.get("study_role") if entry else None
+        demo = entry is None or (role == "legacy_protected" and (roles is None or role not in roles))
+        input_mode = "dashboard_demo" if demo else "team_registry"
         reason = ""
-        if not entry:
-            reason = "팀 시뮬레이터의 지도 목록에 없는 지역"
-        elif roles is not None and entry.get("study_role") not in roles:
-            reason = f"팀 시뮬레이터에서 실행을 허용하지 않는 지도 ({entry.get('study_role', '역할 미기록')})"
-        elif not card.get("sha256") or entry.get("sha256") != card["sha256"]:
+        if entry is not None and (not card.get("sha256") or entry.get("sha256") != card["sha256"]):
             reason = "팀 지도와 기존 지역 카드의 지도 식별값이 다릅니다."
+        elif demo:
+            if not demo_supported:
+                reason = "이 팀 버전의 시연 지도 입력 방식은 아직 확인되지 않았습니다."
+            else:
+                try:
+                    resolve_demo_scene(core, card)
+                except (ValueError, OSError) as exc:
+                    reason = str(exc)
+        elif roles is not None and role not in roles:
+            reason = f"팀 시뮬레이터에서 실행을 허용하지 않는 지도 ({entry.get('study_role', '역할 미기록')})"
         else:
             path = entry["path"].replace("\\", "/")
             if old and path.casefold().startswith(old.casefold() + "/"):
@@ -231,7 +225,8 @@ def map_coverage(source, sha, core):
                 contents = read(relative)
                 if contents is None or hashlib.sha256(contents).hexdigest() != card["sha256"]:
                     reason = "팀 지도 파일이 없거나 실제 파일의 식별값이 다릅니다."
-        result[region] = {"eligible": not reason, "reason": reason, "name": card.get("name", region)}
+        result[region] = {"eligible": not reason, "reason": reason, "name": card.get("name", region),
+                          "input_mode": input_mode}
     return result
 
 

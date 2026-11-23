@@ -56,7 +56,13 @@ class TeamUpdateTests(unittest.TestCase):
         (core / "code/stale_code.py").write_text("stale legacy source")
         (core / "dashboard_execution").mkdir()
         h = hashlib.sha256(b"test scene").hexdigest()
-        selected = [{"key":k, "sha256":h} for k in ("one", "two", "protected", "missing")]
+        selected = [{"key":k, "sha256":h, "joint_split":"external_demonstration",
+                     "path":f"dashboard_execution/maps/{k}/scene.local.json"}
+                    for k in ("one", "two", "protected", "missing")]
+        for entry in selected:
+            scene = core / entry["path"]
+            scene.parent.mkdir(parents=True)
+            scene.write_bytes(b"test scene")
         (core / "dashboard_execution/selected_maps.json").write_text(json.dumps({"maps": selected}))
         maps = core / "code/fast_halfsec/artifacts"
         maps.mkdir(parents=True)
@@ -116,7 +122,7 @@ class TeamUpdateTests(unittest.TestCase):
         self.assertEqual(seen, [("one","A"),("two","A")])
         self.assertEqual(mgr.batch()["completed"], 2)
         self.assertEqual(mgr.batch()["unavailable"], 2)
-        self.assertIn("legacy_protected", mgr.status("protected")["message"])
+        self.assertIn("시연 지도 입력 방식", mgr.status("protected")["message"])
         self.assertIsNone(mgr.current("missing"))
         with self.assertRaisesRegex(ValueError, "버전이 바뀌"):
             mgr.start("one", self.first)
@@ -138,6 +144,50 @@ class TeamUpdateTests(unittest.TestCase):
         self.assertEqual(mgr.status("one")["phase"], "reused")
         self.assertEqual(source_status(self.checkout)["commit"], second)
         self.assertEqual(git(self.checkout, "status", "--porcelain"), "")
+
+    def test_demo_coverage_checks_selected_hash_and_never_overrides_a_registered_scene(self):
+        core, _ = research_runtime()
+        with patch("nicegui_dashboard.team_demo.demo_survey_supported", return_value=True):
+            coverage = map_coverage(self.checkout, self.first, core)
+            self.assertEqual({key: r["input_mode"] for key,r in coverage.items()}, {
+                "one":"team_registry", "two":"team_registry", "protected":"dashboard_demo", "missing":"dashboard_demo"})
+            self.assertTrue(all(r["eligible"] for r in coverage.values()))
+            (core / "dashboard_execution/maps/missing/scene.local.json").write_bytes(b"unverified scene")
+            index = core / "code/fast_halfsec/artifacts/map_registry.json"
+            data = json.loads(index.read_bytes())
+            data["maps"][-1]["sha256"] = hashlib.sha256(b"changed team scene").hexdigest()
+            index.write_text(json.dumps(data))
+            coverage = map_coverage(self.checkout, self.first, core)
+        self.assertFalse(coverage["missing"]["eligible"])
+        self.assertFalse(coverage["protected"]["eligible"])
+        self.assertIn("팀 지도", coverage["protected"]["reason"])
+
+    def test_resume_only_previously_excluded_demo_regions_of_exact_all_region_batch(self):
+        mgr = self.manager
+        batch = mgr.start_many(["one","two","protected","missing"], self.first)
+        with mgr.connection() as conn:
+            conn.execute("UPDATE jobs SET state='running' WHERE region='one'")
+            conn.execute("UPDATE jobs SET state='failed' WHERE region='two'")
+        protected = mgr.status("protected")["id"]
+        failed = mgr.status("two")
+        running = mgr.status("one")
+        with patch("nicegui_dashboard.team_demo.demo_survey_supported", return_value=True):
+            self.assertEqual(mgr.resume_demo_regions(batch["id"], self.first), 2)
+            self.assertEqual(mgr.resume_demo_regions(batch["id"], self.first), 0)
+            with self.assertRaisesRegex(ValueError, "번호 또는 팀 코드"):
+                mgr.resume_demo_regions(batch["id"], "f"*40)
+            self.assertEqual(mgr.status("one"), running)
+            self.assertEqual(mgr.status("two"), failed)
+            self.assertEqual(mgr.status("protected")["id"], protected)
+            self.assertIsNone(mgr.status("protected")["finished_at"])
+            self.assertEqual(mgr.batch()["queued"], 2)
+            with patch.object(mgr, "_capture", side_effect=self.fake_record):
+                mgr.run_worker()
+            newest = mgr.start("one", self.first)
+            with self.assertRaisesRegex(ValueError, "전체 지역 실행"):
+                mgr.resume_demo_regions(newest["id"], self.first)
+            with self.assertRaisesRegex(ValueError, "번호 또는 팀 코드"):
+                mgr.resume_demo_regions(batch["id"], self.first)
 
     def test_invalid_seal_identity_or_artifact_falls_back_and_is_not_reused(self):
         mgr = self.manager

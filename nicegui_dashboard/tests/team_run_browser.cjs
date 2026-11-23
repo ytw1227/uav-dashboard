@@ -2,6 +2,20 @@
 const assert = require('node:assert/strict');
 const {chromium} = require('playwright-core');
 
+async function checkTeamReplay(page) {
+  await page.waitForFunction(() => {
+    const state = window.uavReplay?.snapshot();
+    return state?.run_id === 'team-synthetic-browser-flight' && !state.loading &&
+      state.revision === 'synthetic_revision_0001' && window.__UAV_MAP_TEST__?.snapshot()?.ready;
+  });
+  const cards = page.locator('#metricCards .metric-value');
+  assert.equal(await cards.count(), 4);
+  assert.match(await cards.nth(0).innerText(), /66\.67\s*%/);
+  assert.match(await cards.nth(1).innerText(), /75(?:\.0+)?\s*%/);
+  assert.match(await cards.nth(2).innerText(), /1\s*회/);
+  assert.equal(await page.locator('canvas[aria-label^="보관 비행 지도"]:visible').count(), 0);
+}
+
 async function main() {
   const browser = await chromium.launch({
     ...(process.env.CHROME_PATH ? {executablePath: process.env.CHROME_PATH} : {channel: 'chrome'}),
@@ -22,23 +36,64 @@ async function main() {
     await page.getByRole('option', {name:'기본 · 미적용'}).click();
     await page.waitForFunction(() => window.uavReplay?.snapshot().mode === 'nominal');
     await start.click();
-    const current = page.getByTestId('team-recorded-flight');
-    await current.locator('canvas[aria-label^="보관 비행 지도"]').waitFor();
+    await checkTeamReplay(page);
     assert.match(await page.getByTestId('team-result-source').innerText(), /aaaaaaa.*0.5초/);
     assert.equal(new URL(page.url()).pathname, '/regions');
     const archive = page.locator('#uavReplaySurface');
-    assert.equal(await archive.isHidden(), true);
+    assert.equal(await archive.isVisible(), true);
+    await page.locator('#playButton').click();
+    await page.waitForFunction(() => window.uavReplay.snapshot().time > 0);
+    if (await page.evaluate(() => window.uavReplay.snapshot().playing)) {
+      await page.locator('#playButton').click();
+    }
+    const clock = page.locator('#timeInput');
+    await clock.fill('3.5');
+    await clock.press('Enter');
+    await page.waitForFunction(() => window.uavReplay.snapshot().time === 3.5 ||
+                                      window.__PLAYBACK_TEST__?.snapshot().time === 3.5);
+    assert.match(await page.locator('#controlTraceDetail').textContent(), /재배치 판단 점수/);
+    assert.match(await page.locator('#controlTraceDetail').textContent(), /혼합 점수 0\.2/);
+    await page.locator('#fmEvaluationTab').click();
+    await page.locator('#fmEvaluationView').filter({hasText:/이 팀 버전의 기준 비행으로 별도 평가한 기록이 없어/}).waitFor();
+    await page.locator('#fmFleet').click();
+    const incident = 'persistent_search_outage-000000';
+    await page.locator('#incidentQuickSelect').selectOption(incident);
+    await page.locator('#incidentOpen').click();
+    const dialog = page.locator('#incidentDialog[open][data-ready="true"]');
+    await dialog.waitFor();
+    assert.deepEqual(await dialog.evaluate(node => [node.dataset.event, +node.dataset.start, +node.dataset.end]),
+                     [incident, 2, 4]);
+    await page.keyboard.press('Escape');
+    await page.locator('#incidentDialog[open]').waitFor({state:'hidden'});
+    await page.locator('button[data-uav-tab="compare"]').click();
+    await page.getByText(/이 팀 버전으로 실행한 기본 대형의 비행 기록이 아직 없습니다/).waitFor();
+    await page.locator('button[data-uav-tab="performance"]').click();
+    await page.getByText('현재 비행에 사용한 모델', {exact:true}).waitFor();
+    assert.match(await page.locator('#performanceContent').innerText(), /현재 비행에 사용한 모델/);
+    assert.match(await page.locator('#performanceContent').innerText(), /0\.5초/);
+    assert.match(await page.locator('#performanceContent').innerText(), /synthetic-halfsec-policy/);
+    await page.locator('button[data-uav-tab="map"]').click();
+    await page.locator('#flightNominal').click();
+    await page.waitForFunction(() => {
+      const s = window.uavReplay?.snapshot();
+      return s?.mode === 'nominal' && !s.loading && s.run_id !== 'team-synthetic-browser-flight';
+    });
+    await page.locator('#flightV21').click();
+    await checkTeamReplay(page);
     await page.getByTestId('team-result-choice').click();
     await page.getByRole('option', {name:'기존 대시보드 비행'}).click();
     await archive.waitFor();
-    assert.equal(await current.isHidden(), true);
+    await page.waitForFunction(() => {
+      const s = window.uavReplay?.snapshot();
+      return s?.region === 'bundang' && !s.loading && s.run_id !== 'team-synthetic-browser-flight';
+    });
     const cards = page.getByTestId('library-cards');
     await cards.locator('button[data-region=sangam_dmc]').click();
     await page.waitForFunction(() => window.uavReplay?.snapshot().region === 'sangam_dmc');
     await page.waitForFunction(() => document.querySelector('[data-testid=team-run-eligibility]')?.textContent.includes('검증용 배제 지역'));
     assert.equal(await start.isDisabled(), true);
     await cards.locator('button[data-region=bundang]').click();
-    await current.locator('canvas[aria-label^="보관 비행 지도"]').waitFor();
+    await checkTeamReplay(page);
 
     const other = await context.newPage();
     await other.goto(page.url());
@@ -70,11 +125,26 @@ async function main() {
     await page.getByTestId('team-run-retry').click();
     await page.waitForFunction(() => document.querySelector('[data-testid=team-run-status]')?.textContent.includes('대기 69'));
     assert.equal(await start.isDisabled(), true);
+    await page.addInitScript(() => {
+      window.openedFlights = [];
+      function sample() {
+        const surface = document.querySelector('#uavReplaySurface');
+        const flight = window.uavReplay?.snapshot();
+        if (surface?.dataset.loadState === 'ready' && !surface.closest('[inert]') &&
+            flight?.run_id && !flight.loading && !window.openedFlights.includes(flight.run_id)) {
+          window.openedFlights.push(flight.run_id);
+        }
+        if (!window.openedFlights.includes('team-synthetic-browser-flight')) requestAnimationFrame(sample);
+      }
+      requestAnimationFrame(sample);
+    });
     await page.reload();
-    await current.locator('canvas[aria-label^="보관 비행 지도"]').waitFor();
+    await checkTeamReplay(page);
+    await page.waitForFunction(() => window.openedFlights?.includes('team-synthetic-browser-flight'));
+    assert.deepEqual(await page.evaluate(() => window.openedFlights), ['team-synthetic-browser-flight']);
     assert.equal(await start.isDisabled(), true);
     assert.deepEqual(errors, []);
-    console.log('PASS: single run button, recorded bundle/map on card, archived replay, 70-region queue and failed retry (synthetic).');
+    console.log('PASS: native team replay surface, recorded KPIs/clock/incident, archive switching, 70-region queue and failed retry (synthetic).');
   } finally {
     await browser.close();
   }
