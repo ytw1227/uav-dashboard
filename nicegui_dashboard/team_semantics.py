@@ -16,19 +16,18 @@ HOOKS = {
         ],
     ),
     "presentation.js": (
-        "mapScore",
+        "scoreText",
         [
             ("<title>가운데 선은 연결 기준 0 dB, 점은 현재 시각입니다.</title>",
              "<title>가운데 선은 '+(state.team?'SINR 기준':'연결 기준')+' 0 dB, 점은 현재 시각입니다.</title>"),
             ("const risk=state.risk, hasTime=",
-             "const title=summary.querySelector('.pe-risk-probability').previousElementSibling;"
-             "title.textContent=state.team?'재배치 판단 점수':'다음 단절 예측';"
              "summary.querySelector('.pe-network-title span').textContent=state.team?'SINR 기준 0 dB':'연결 기준 0 dB';"
-             "if(state.team)return mapScore(summary,state.risk);\n const risk=state.risk, hasTime="),
+             "\n const risk=state.risk, hasTime="),
+            (":'예방 판단 점수 미기록';", ":risk.team && finite(risk.score)?scoreText(risk)+' · 기준 미기록':'예방 판단 점수 미기록';"),
         ],
     ),
     "flight_metrics.js": (
-        "isTeam,teamDecisions,teamColorRule,teamEvaluationNote,panelScore",
+        "isTeam,teamDecisions,teamColorRule,teamEvaluationNote,scoreText",
         [
             ("export function fromRecordedDecisions(state){", "export function fromRecordedDecisions(state){\n"
              " if(isTeam(state.manifest))return teamDecisions(state);"),
@@ -36,9 +35,10 @@ HOOKS = {
              "const archiveColorRule=colorRule.textContent;el('fmNodeStates').before(colorRule);"),
             ("if(key!==runKey){runKey=key;", "if(key!==runKey){runKey=key;"
              "const native=isTeam(s.manifest);colorRule.textContent=native?teamColorRule:archiveColorRule;"
-             "el('fmForecast').querySelector('h4').textContent=native?'재배치 판단 점수':'새 수색망 단절 예측';"
              "el('fmRecallHelp').lastElementChild.hidden=native;"),
-            ("const risk=comm.risk;", "const risk=comm.risk; if(risk.team)return panelScore(el,risk,decision);"),
+            ("el('fmScoreThreshold').textContent=[decisionTime,gate].filter(Boolean).join(' · ');",
+             "const recordedGate=gate||(risk.team&&finite(risk.score)?scoreText(risk)+' · 기준 미기록':'');"
+             "el('fmScoreThreshold').textContent=[decisionTime,recordedGate].filter(Boolean).join(' · ');"),
             ("const region=mapKey(state.manifest),descriptor=mapEvaluation(region);",
              "if(isTeam(state.manifest)){evaluation?.dispose();evaluation=null;evaluationRegion=null;"
              "el('fmEvaluationView').textContent=teamEvaluationNote;"

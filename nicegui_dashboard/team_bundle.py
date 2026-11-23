@@ -140,6 +140,11 @@ def validate_capture(row, arrays):
     if not (len(indices) == len(arrays["scores"]) == len(arrays["support_counts"])
             and np.all((0 <= indices) & (indices < steps)) and np.all(np.diff(indices)>0)):
         raise ValueError("모델 판단 시각이 기록과 일치하지 않습니다.")
+    probabilities = arrays.get("fleet_onset_probability")
+    if row["team_capture_version"] == "2" or probabilities is not None:
+        if (probabilities is None or probabilities.shape != indices.shape
+                or not np.all(np.isfinite(probabilities) & (probabilities >= 0) & (probabilities <= 1))):
+            raise ValueError("편대 단절 예측값 또는 판단 시각의 개수가 일치하지 않습니다.")
     return outages
 
 
@@ -149,6 +154,7 @@ def write_database(path, row, arrays, fleet, outages, definitions):
     positions, last = arrays["positions"], arrays["final_positions"]
     score_at = {int(t): (float(s), int(n)) for t,s,n in
                 zip(arrays["plan_frames"], arrays["scores"], arrays["support_counts"])}
+    onset_at = dict(zip(arrays["plan_frames"], arrays.get("fleet_onset_probability", ())))
     requests = {e["time_s"]: e for e in row["events"]}
     with closing(sqlite3.connect(path)) as db, db:
         db.executescript(SCHEMA)
@@ -187,6 +193,9 @@ def write_database(path, row, arrays, fleet, outages, definitions):
             score, support = score_at.get(k, (None, 0))
             decision = dict(decision_time_s=start, available_at_s=start, actions=actions, predictions=[],
                             fleet_score=score if support>0 else None, support_count=support)
+            if "fleet_onset_probability" in arrays:
+                decision["fleet_onset_probability"] = float(onset_at[k]) if support > 0 else None
+                decision["pre_action_connected"] = bool(arrays["network"][k-1]) if k else None
             db.execute("INSERT INTO decisions VALUES(?,?)", (start, packed(decision)))
         add_position(row["duration_s"], last)
 
@@ -284,6 +293,12 @@ def publish_capture(record, arrays, scene_path, output_root):
             artifacts=artifacts)
         if threshold is not None:
             manifest["model_threshold"] = threshold
+        if "fleet_onset_probability" in arrays:
+            manifest["head_definitions"]["fleet_onset_probability"] = {
+                "window_s": [3, 7], "window_bounds": "[)", "minimum_outage_s": 1,
+                "scope": "next_persistent_search_network_outage",
+                "source": "final_v1.halfsec_joint.model.JointPolicy.forecast/fleet_logits",
+            }
         (bundle/"manifest.json").write_bytes(encode(manifest))
         (bundle/"READY").write_bytes(encode(dict(manifest_sha256=digest(bundle/"manifest.json"))))
         store = load_store(SERVICE_PROJECT, output_root, quota_gib=quota)

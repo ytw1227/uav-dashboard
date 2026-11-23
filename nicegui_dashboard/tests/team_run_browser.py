@@ -23,7 +23,7 @@ from nicegui_dashboard.tests.shared_data import shared_files
 
 
 def make_team_flight(store, sha):
-    """Use the real static Bundang scene and an unmistakably synthetic six-second flight."""
+    """Use the real static Bundang scene and a twelve-second synthetic flight."""
     from dashboard_contract.validation import validate_bundle
     from dashboard_tests.fixtures import seal
     manifest = dict(schema_version="1.0.0", run_id="team-synthetic-browser-flight",
@@ -33,7 +33,7 @@ def make_team_flight(store, sha):
                     stage_status="completed", export_status="ready", started_at=None,
                     completed_at="2026-01-01T00:00:00Z", completion_time_status="recorded",
                     model_id="synthetic-model", config_hash="synthetic-config", artifacts={},
-                    clock_definitions={}, scene_ref="scene.json", simulation_end_s=6., fixture=True)
+                    clock_definitions={}, scene_ref="scene.json", simulation_end_s=12., fixture=True)
     bundle = store / "bundles" / manifest["run_id"] / manifest["bundle_revision"]
     bundle.mkdir(parents=True)
     with PortableDashboard(shared_files()["B"], codec_dir=CODECS) as package:
@@ -42,9 +42,9 @@ def make_team_flight(store, sha):
     (bundle / "scene.json").write_text(json.dumps(scene), encoding="utf-8")
     fleet = [dict(id=f"uav-{i}", role=role) for i,role in enumerate(("search","search","relay"))]
     ids = [u["id"] for u in fleet]
-    final = dict(pdr=.75, ctr=2/3, timely_pdr=.5, persistent_onsets=1,
-                 persistent_cut_seconds=2., generated_packets=12, delivered_packets=9,
-                 duration_s=6., mission_completed=True)
+    final = dict(pdr=.75, ctr=5/6, timely_pdr=.5, persistent_onsets=1,
+                 persistent_cut_seconds=2., generated_packets=24, delivered_packets=18,
+                 duration_s=12., mission_completed=True)
     definitions = {k: dict(id="fixture."+k, key=k, label=label, unit=unit, aggregation=formula)
                    for k, (label, unit, formula) in METRICS.items()}
     clocks = dict(motion_dt_s=.1, rf_dt_s=.5, decision_dt_s=.5, position_sample_dt_s=.5)
@@ -53,17 +53,18 @@ def make_team_flight(store, sha):
                     controller="synthetic-halfsec-policy", model_sha256="c"*64,
                     decision_interval_s=.5, seed=2026110701, kind="continuous", direction="east_west",
                     split="external_demonstration", mission_completed=True, clocks=clocks, fleet=fleet,
-                    final_metrics=final, metric_definitions=definitions, head_definitions={},
+                    final_metrics=final, metric_definitions=definitions,
+                    head_definitions={"fleet_onset_probability":{"window_s":[3,7]}},
                     event_definitions={"search_outage": "fixture search outage",
                                        "persistent_search_outage": "fixture persistent outage of at least one second"},
                     observation_definitions={"beacon_sinr_db": {"unit": "dB"}})
     with closing(sqlite3.connect(bundle / "data.sqlite")) as db, db:
         db.executescript(SCHEMA)
-        for step in range(13):
+        for step in range(25):
             t = step * .5
             uavs = [dict(u, x=-60 + 15*i + t, y=12*i, z=45) for i, u in enumerate(fleet)]
             db.execute("INSERT INTO positions VALUES(?,?)", (t, packed(dict(sample_time_s=t, available_at_s=t, uavs=uavs))))
-            if step == 12:
+            if step == 24:
                 break
             connected = not 2 <= t < 4
             groups = [ids] if connected else [[ids[0], ids[2]], [ids[1]]]
@@ -75,7 +76,8 @@ def make_team_flight(store, sha):
                          delivered_packets=(step+1)*3//4, pdr_so_far=((step+1)*3//4)/(step+1)))
             db.execute("INSERT INTO rf_frames VALUES(?,?,?,?)", (t+.5,t,t+.5,packed(frame)))
             decision = dict(decision_time_s=t, available_at_s=t, actions=[], predictions=[], fleet_score=.2,
-                            support_count=1)
+                            support_count=1, pre_action_connected=(not 2 <= t-.5 < 4) if t else None,
+                            fleet_onset_probability=.718 if t != 1.5 else None)
             db.execute("INSERT INTO decisions VALUES(?,?)", (t,packed(decision)))
             for observer, peer in ((ids[0],ids[1]),(ids[1],ids[0]),(ids[2],ids[0])):
                 obs = dict(observed_at_s=t, available_at_s=t, observer_id=observer, peer_id=peer,

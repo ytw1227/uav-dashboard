@@ -58,6 +58,7 @@ class TeamBundleTests(unittest.TestCase):
         self.assertEqual(loaded["positions"][-1]["uavs"][0]["x"],1.)
         self.assertIsNone(loaded["decisions"][1]["fleet_score"])
         self.assertEqual(loaded["decisions"][2]["fleet_score"],.8)
+        self.assertNotIn("fleet_onset_probability",loaded["decisions"][2])
         self.assertEqual(loaded["observations"][0]["observer_id"],"uav-2")
         cuts = events(manifest,bundle,event_type="persistent_search_outage")["events"]
         self.assertEqual([(e["start_s"],e["end_s"]) for e in cuts],[(.5,1.5)])
@@ -71,6 +72,26 @@ class TeamBundleTests(unittest.TestCase):
         self.assertEqual(case["search_groups"], [["uav-0"], ["uav-1"]])
         self.assertEqual(len(case["crossing_lost_links"]), 2)
         self.assertEqual(case["interventions"], [])
+
+    def test_head_recording_is_distinct_from_mixed_score_and_time_aligned(self):
+        self.record["team_capture_version"] = "2"
+        self.a["fleet_onset_probability"] = np.array([.9, .35], dtype=np.float32)
+        result = publish_capture(self.record, self.a, self.scene, self.root/"store")
+        from dashboard_contract.validation import validate_bundle
+        from dashboard_service.query import timeline
+        bundle = self.root/"store"/"bundles"/result["run_id"]/result["revision"]
+        manifest = validate_bundle(bundle)
+        self.assertEqual(manifest["head_definitions"]["fleet_onset_probability"]["window_s"], [3, 7])
+        decisions = timeline(manifest, bundle, 0, 2, 1)["decisions"]
+        self.assertIsNone(decisions[0]["pre_action_connected"])
+        self.assertTrue(decisions[1]["pre_action_connected"])
+        self.assertIsNone(decisions[1]["fleet_onset_probability"])  # unsupported model input
+        self.assertFalse(decisions[2]["pre_action_connected"])
+        self.assertEqual(decisions[2]["fleet_score"], .8)
+        self.assertAlmostEqual(decisions[2]["fleet_onset_probability"], .35, places=6)
+        for data in (np.array([.1]), np.array([float("nan"), .1]), np.array([.1, 1.5])):
+            with self.subTest(data=data), self.assertRaises(ValueError):
+                validate_capture(self.record, dict(self.a, fleet_onset_probability=data))
 
     def test_partial_diagnostic_and_inconsistent_counts_never_publish(self):
         for changes in (dict(max_seconds_requested=2.), dict(onsets=2), dict(network_fraction=.75),

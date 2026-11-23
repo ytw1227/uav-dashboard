@@ -12,6 +12,21 @@ from nicegui_dashboard.team_capture import FlightMeasurements, capture, main, wr
 
 
 class CaptureBoundaryTests(unittest.TestCase):
+    def test_forecast_probe_observes_unblended_probabilities_and_preserves_model_output(self):
+        try:
+            import torch
+        except ImportError:
+            self.skipTest("The team model's PyTorch environment is required")
+        logits = torch.log(torch.tensor([[.1, .2, .3, .4]]))
+        head = torch.nn.Identity()
+        tap = FlightMeasurements()
+        tap.frame = 25
+        with head.register_forward_hook(tap.observe_fleet_head):
+            result = head(logits)
+        self.assertIs(result, logits)
+        self.assertEqual(tap.forecast_frames, [5])
+        self.assertAlmostEqual(tap.onset_probabilities[0], .7, places=6)
+
     def test_different_commit_cannot_claim_an_existing_recording(self):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)

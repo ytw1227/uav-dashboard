@@ -10,7 +10,7 @@ async function checkTeamReplay(page) {
   });
   const cards = page.locator('#metricCards .metric-value');
   assert.equal(await cards.count(), 4);
-  assert.match(await cards.nth(0).innerText(), /66\.67\s*%/);
+  assert.match(await cards.nth(0).innerText(), /83\.33\s*%/);
   assert.match(await cards.nth(1).innerText(), /75(?:\.0+)?\s*%/);
   assert.match(await cards.nth(2).innerText(), /1\s*회/);
   assert.equal(await page.locator('canvas[aria-label^="보관 비행 지도"]:visible').count(), 0);
@@ -47,12 +47,25 @@ async function main() {
       await page.locator('#playButton').click();
     }
     const clock = page.locator('#timeInput');
+    await clock.fill('1');
+    await clock.press('Enter');
+    await page.waitForFunction(() => document.querySelector('#fmFleetProbability')?.textContent === '모델 추정 71.8%');
+    assert.equal(await page.locator('#fmForecast h4').innerText(), '새 수색망 단절 예측');
+    assert.equal(await page.locator('.pe-risk-probability').innerText(), '모델 추정 71.8%');
+    assert.equal(await page.locator('.pe-risk-probability').evaluate(n=>n.previousElementSibling.textContent),'다음 단절 예측');
+    assert.match(await page.locator('#fmForecastWindow').textContent(), /4초 이상 8초 미만/);
+    await clock.fill('1.5');
+    await clock.press('Enter');
+    await page.waitForFunction(() => document.querySelector('#fmScore')?.textContent === '확률 미산출');
+    assert.equal(await page.locator('.pe-risk-probability').innerText(), '확률 미산출');
     await clock.fill('3.5');
     await clock.press('Enter');
     await page.waitForFunction(() => window.uavReplay.snapshot().time === 3.5 ||
                                       window.__PLAYBACK_TEST__?.snapshot().time === 3.5);
     assert.match(await page.locator('#controlTraceDetail').textContent(), /재배치 판단 점수/);
     assert.match(await page.locator('#controlTraceDetail').textContent(), /혼합 점수 0\.2/);
+    await page.waitForFunction(() => document.querySelector('#fmScore')?.textContent === '현재 수색망 단절');
+    assert.equal(await page.locator('.pe-risk-probability').innerText(), '새 단절 예측 대상 아님');
     await page.locator('#fmEvaluationTab').click();
     await page.locator('#fmEvaluationView').filter({hasText:/이 팀 버전의 기준 비행으로 별도 평가한 기록이 없어/}).waitFor();
     await page.locator('#fmFleet').click();

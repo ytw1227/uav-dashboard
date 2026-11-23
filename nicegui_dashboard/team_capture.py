@@ -53,8 +53,22 @@ class FlightMeasurements:
     def __init__(self):
         self.beacons = []
         self.counters = []
+        self.forecast_frames = []
+        self.onset_probabilities = []
         self.frame = 0
         self.last_report = time.monotonic()
+
+    def observe_fleet_head(self, module, inputs, logits):
+        # Inspect the exact forward pass used by JointPolicy.forecast. Returning
+        # None from a PyTorch hook leaves the logits passed to the controller intact.
+        if tuple(logits.shape) != (1, 4) or self.frame % 5:
+            raise ValueError("편대 단절 예측의 분류 출력 또는 판단 시각이 달라졌습니다.")
+        probability = logits.detach().softmax(dim=-1)[0, 2:].sum().item()
+        # A sum of float32 softmax masses can round one ULP above unity.
+        if not math.isfinite(probability) or not 0 <= probability <= 1 + 2**-23:
+            raise ValueError("편대 단절 예측 출력을 확인할 수 없습니다.")
+        self.forecast_frames.append(self.frame // 5)
+        self.onset_probabilities.append(min(probability, 1.))
 
     def watch_sensor(self, sensor):
         import numpy as np
@@ -129,6 +143,10 @@ def capture(code, core, spec, commit, max_seconds=None):
         roles = study_roles(context_source)
 
         class RecordedFlight(team_flight):
+            def run(self, *args, **kwargs):
+                with self.model.fleet.register_forward_hook(probes.observe_fleet_head):
+                    return super().run(*args, **kwargs)
+
             def survey(self, region, direction):
                 # The team release may switch between two independently hashed registries.
                 entry = context.registry().get(region)
@@ -200,12 +218,14 @@ def capture(code, core, spec, commit, max_seconds=None):
                 or row["decision_interval_s"] != DECISION_S or row["controller"] != MODE
                 or not row["safety_passed"] or not row["packet_conserved"]):
             raise ValueError("팀 비행 기록 시각, 제어기 또는 물리·패킷 검사 결과가 일치하지 않습니다.")
-        if len(frames["plan_frames"]) != len(frames["scores"]) or len(frames["support_counts"]) != len(frames["scores"]):
+        if (len(frames["plan_frames"]) != len(frames["scores"]) or len(frames["support_counts"]) != len(frames["scores"])
+                or not np.array_equal(probes.forecast_frames, frames["plan_frames"])):
             raise ValueError("팀 예측 시각과 점수 개수가 다릅니다.")
         final, _ = context_data["nav"].motion.positions()
         archive = {k:frames[k] for k in ("network", "links", "positions", "margin_db", "applied_offsets",
                                           "plan_frames", "scores", "support_counts")}
         archive.update(final_positions=np.array(final, copy=True), offset_xy_m=np.array(OFFSETS, copy=True),
+                       fleet_onset_probability=np.asarray(probes.onset_probabilities, dtype=np.float32),
                        packet_counters=np.asarray(probes.counters, dtype=np.int64),
                        beacon_rx=np.asarray(probes.beacons, dtype=float).reshape(-1, 5))
         release_meta = json.loads(release.MANIFEST.read_text(encoding="utf-8"))
@@ -213,7 +233,7 @@ def capture(code, core, spec, commit, max_seconds=None):
                    full_mission_budget_s=MAX_MISSION, max_seconds_requested=max_seconds,
                    altitude_m=context_data["altitude"], split=context_data["split"],
                    map_input_source=context_data["map_input_source"], source_study_role=context_data["source_study_role"],
-                   map_sha256=context_data["map_sha"], team_capture_version="1",
+                   map_sha256=context_data["map_sha"], team_capture_version="2",
                    model_sha256=release_meta["sha256"], model_threshold=release_meta["threshold"])
         return row, archive, context_data["scene"]
     finally:
