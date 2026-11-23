@@ -9,6 +9,7 @@ from nicegui import app, ui
 from .library_view import render_library
 from .package_web import PackageMedia, register_package_routes
 from .registry_notice import render_registry_notice
+from .team_source_view import TeamCodeUpdates, render_team_code
 
 
 SOURCES = {"S": ("상암 DMC", "/sangam"), "B": ("전체 지역 V2", "/regions"), "L": ("로컬 결과", "/local")}
@@ -22,6 +23,13 @@ SHELL_CSS = """
 .uav-top a {color:#dbe8ef; text-decoration:none; border-radius:5px; padding:7px 11px; white-space:nowrap}
 .uav-top a[aria-current=page] {background:#e0f3f0;color:#0d4f50;font-weight:700}
 .uav-top .uav-download {margin-left:auto; border:1px solid #617b87;font-size:13px}
+.uav-team-code {display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin-left:auto;max-width:100%}
+.uav-team-code .q-btn {padding:3px 10px}
+.uav-source-version,.uav-source-status {font-size:13px;color:#dbe8ef}
+.uav-source-status {max-width:45ch;overflow-wrap:anywhere}
+.uav-source-status:empty {display:none}
+.uav-source-status[data-state=error] {color:#ffd4cc}
+.uav-team-code ~ .uav-download {margin-left:0}
 .uav-layout {display:grid;grid-template-columns:minmax(240px,285px) minmax(0,1fr);gap:16px;
  align-items:start; padding:16px; width:100%; box-sizing:border-box;background:#f0f4f6}
 .uav-layout > * {min-width:0}
@@ -39,7 +47,7 @@ SHELL_CSS = """
 """
 
 
-def header(source):
+def header(source, team_updates=None):
     ui.add_css(SHELL_CSS)
     with ui.element("header").classes("uav-top"):
         ui.label("UAV 통신 대시보드").classes("uav-title")
@@ -48,6 +56,8 @@ def header(source):
             link = ui.link(label, path).props(f'data-source={key}')
             if key == source:
                 link.props('aria-current=page')
+        if source == "B" and team_updates is not None:
+            render_team_code(team_updates)
         if source in ("S", "B"):
             ui.link("공유용 HTML 받기", f"/part2/data/{source}/download").classes("uav-download").props("download")
 
@@ -55,6 +65,8 @@ def header(source):
 def serve_workspace(args, digests):
     from .replay_view import render_replay
     from .team_source import TeamSourceError, source_path, source_status
+
+    team_updates = TeamCodeUpdates()
 
     @app.get("/api/team-source", include_in_schema=False)
     def connected_team_source():
@@ -69,7 +81,7 @@ def serve_workspace(args, digests):
     app.on_shutdown(media.close)
 
     async def playback_page(source):
-        header(source)
+        header(source, team_updates)
         render_registry_notice(args.service_url)
         try:
             package = await asyncio.to_thread(media.package, source)

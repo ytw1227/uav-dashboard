@@ -1,4 +1,5 @@
 """Windows desktop shortcut for the local NiceGUI dashboard."""
+import argparse
 import ctypes
 import http.client
 import msvcrt
@@ -71,8 +72,14 @@ def ensure_running(port=PORT, results=None, log_dir=LOG_DIR):
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--data-root", type=Path)
+    parser.add_argument("--service-project", type=Path)
+    args = parser.parse_args()
     try:
-        ensure_running()
+        if args.service_project is not None:
+            os.environ["UAV_SERVICE_PROJECT"] = str(args.service_project.resolve())
+        ensure_running(results=args.data_root)
         os.startfile(f"http://127.0.0.1:{PORT}/regions")
     except (OSError, RuntimeError, http.client.HTTPException) as error:
         ctypes.windll.user32.MessageBoxW(None, str(error), "UAV 대시보드", 0x10)
