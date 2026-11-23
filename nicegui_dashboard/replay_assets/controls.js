@@ -75,6 +75,11 @@ export async function initialize(source, preferredRun, preferredRevision) {
     window.uavReplay = Object.freeze({
         selectRun: chooseRun,
         openRun: (id, revision) => chooseRun(id, revision, false),
+        suspend: () => {
+            S.playing = false;
+            if (incidentReplay.snapshot().open) incidentReplay.reset();
+            publishSelection();
+        },
         setTab: tab => {setTab(tab); publishSelection(); return clientState();},
         setMode: async mode => {await switchFlight(mode); publishSelection(); return clientState();},
         snapshot: clientState,

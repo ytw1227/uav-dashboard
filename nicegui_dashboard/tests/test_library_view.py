@@ -88,6 +88,16 @@ class LibraryParity(unittest.TestCase):
         self.assertEqual(result.missing, ["상암 DMC"])
         self.assertEqual(result.visible, [])
 
+    def test_new_applied_flight_filters_without_claiming_a_paired_comparison(self):
+        card = self.s[0]
+        applied = replace(card.flights["v21"], metrics={"pdr": .94})
+        updated = replace(card, flights={**card.flights, "v21": applied}, evaluation={}, team_sha="a" * 40)
+        result = filter_cards([updated], mode="v21", metric="pdr")
+        self.assertEqual(result.visible, [updated])
+        self.assertEqual(result.counts, {"v21": 0, "nominal": 0})
+        self.assertEqual(result.valid, 0)
+        self.assertIsNone(updated.recall)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from functools import lru_cache, partial
 from pathlib import Path
@@ -58,6 +58,7 @@ class MapCard:
     district: str
     flights: dict[str, Flight]
     evaluation: dict
+    team_sha: str = ""
 
     @property
     def recall(self):
@@ -148,6 +149,14 @@ def filter_cards(cards, *, mode="v21", province="", district="", search="", metr
             continue
         if metric:
             base, applied = card.ratio("nominal", metric), card.ratio("v21", metric)
+            if card.team_sha:
+                # The public team core currently produces the applied flight only.
+                # Filter on the chosen flight, but don't count a cross-version pair.
+                missing.append(card.label)
+                selected = base if mode == "nominal" else applied
+                if selected is not None and selected <= 0.95:
+                    visible.append(card)
+                continue
             if base is None or applied is None:
                 missing.append(card.label)
                 continue
@@ -182,6 +191,7 @@ class LibraryView:
         self.on_select = on_select
         self.on_open = on_open
         self.cards = map_cards(catalog, geography(source))
+        self.archived = list(self.cards)
         self.by_flight = {f.key: card for card in self.cards for f in card.flights.values()}
         initial_mode = "v21" if any("v21" in c.flights for c in self.cards) else "nominal"
         self.initial_run = next((c.flights[initial_mode].key for c in self.cards if initial_mode in c.flights), None)
@@ -239,6 +249,34 @@ class LibraryView:
     def _sort(self):
         self._render()
 
+    def select_mode_for_result(self, region, mode):
+        """Show a requested finished run without choosing a different filtered card."""
+        card = next(card for card in self.cards if card.region == region)
+        self.updating_district = True
+        try:
+            self.mode.value = mode
+        finally:
+            self.updating_district = False
+        self.selected = card.flights[mode].key
+        self._render()
+        return self.selected
+
+    def show_team_results(self, records):
+        """Use published metrics; keep archive pins for navigation to the original."""
+        cards = []
+        for card in self.archived:
+            record = records.get(card.region)
+            if record is None or "v21" not in card.flights:
+                cards.append(card)
+                continue
+            flights = dict(card.flights)
+            flights["v21"] = replace(flights["v21"], metrics=record["metrics"])
+            cards.append(replace(card, flights=flights, evaluation={}, team_sha=record["sha"]))
+        if cards != self.cards:
+            self.cards = cards
+            self.by_flight = {flight.key: card for card in cards for flight in card.flights.values()}
+            self._render()
+
     def _choose(self, flight):
         if flight.key == self.selected:
             return None
@@ -274,11 +312,11 @@ class LibraryView:
         self.summary.clear()
         if metric:
             with self.summary:
-                ui.label(f"{METRICS[metric]} 95% 이하 · 유효 지도 {result.valid}개")
+                ui.label(f"{METRICS[metric]} 95% 이하 · 같은 조건 비교 가능 {result.valid}개")
                 ui.label(f"미적용 {result.counts['nominal']}곳 → 적용 {result.counts['v21']}곳").classes("font-semibold")
                 with ui.expansion("기준선을 넘은 지역과 결측").props("dense").classes("w-full"):
                     for title, names in (("95% 초과로 올라감",result.above),("95% 이하로 내려감",result.below),
-                                         ("양쪽 값이 없어 제외",result.missing)):
+                                         ("같은 조건 비교에서 제외",result.missing)):
                         ui.label(f"{title} · {', '.join(names) or '없음'}")
         self.listing.clear()
         self.buttons = {}
@@ -293,6 +331,10 @@ class LibraryView:
                 with button, ui.column().classes("w-full min-w-0 items-stretch gap-0"):
                     ui.label(card.label).classes("font-bold leading-tight")
                     ui.label(f"{card.province} · {card.district}").classes("text-xs text-slate-600")
+                    if card.team_sha:
+                        description = (f"팀 실행 · {card.team_sha[:7]}" if mode == "v21"
+                                       else "기본 대형 · 기존 기록")
+                        ui.label(description).classes("text-xs font-semibold")
                     if card.evaluation:
                         n = card.evaluation.get("events")
                         evidence = f"{card.evaluation.get('hits')}/{n}건" if n else "평가 대상 단절 없음"

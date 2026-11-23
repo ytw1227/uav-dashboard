@@ -126,7 +126,8 @@ def load_path_settings(path):
     if not path.is_file():
         return
     settings = json.loads(path.read_text(encoding="utf-8-sig"))
-    allowed = {"UAV_SHARED_S", "UAV_SHARED_B", "UAV_DATA_ROOT", "UAV_SERVICE_PROJECT", "UAV_RESEARCH_CORE", "UAV_TEAM_SOURCE"}
+    allowed = {"UAV_SHARED_S", "UAV_SHARED_B", "UAV_DATA_ROOT", "UAV_SERVICE_PROJECT",
+               "UAV_RESEARCH_CORE", "UAV_RESEARCH_PYTHON", "UAV_TEAM_SOURCE"}
     if not isinstance(settings, dict) or settings.keys() - allowed:
         raise ValueError("settings.local.json contains an unrecognized path option")
     for key, value in settings.items():

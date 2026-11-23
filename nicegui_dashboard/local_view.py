@@ -665,7 +665,7 @@ class Console:
             except (ServiceReadError, ValueError) as error:
                 ui.notify(show_error(error), type="negative")
 
-    async def open_run(self, row, *, automatic=False):
+    async def open_run(self, row, *, automatic=False, full_flight=False, heading=None):
         pin = (row["run_id"], revision(row))
         if automatic and self.pending_pin and (not self.pending_auto or self.pending_pin == pin):
             return
@@ -690,10 +690,10 @@ class Console:
             fleet = {n["id"]: f"{n['id']} · {n.get('role', '')}" for n in manifest.get("fleet", [])}
             observer = next((n["id"] for n in manifest.get("fleet", []) if n.get("role") == "relay"), next(iter(fleet), None))
             peer = next((n for n in fleet if n != observer), None)
-            end_s = min(duration, 15)
+            end_s = duration if full_flight else min(duration, 15)
             request_id = f"open-{seq}"
             timeline, page = await asyncio.gather(
-                asyncio.to_thread(self.api.timeline, *pin, start_s=0, end_s=end_s, at_s=0,
+                asyncio.to_thread(self.api.timeline, *pin, start_s=0, end_s=min(end_s, 30), at_s=0,
                                   observer=observer, peer=peer, request_id=request_id),
                 asyncio.to_thread(self.api.events, *pin, start_s=0, end_s=end_s),
             )
@@ -720,11 +720,11 @@ class Console:
             self.detail.clear()
             m = meta(row)
             with self.detail:
-                ui.label(f"{self.names.get(m.get('region'), m.get('region') or '보관 비행')} · {LABELS.get(m.get('mode'),m.get('mode'))}").classes("text-h6")
+                ui.label(heading or f"{self.names.get(m.get('region'), m.get('region') or '보관 비행')} · {LABELS.get(m.get('mode'),m.get('mode'))}").classes("text-h6")
                 ui.label(f"{self.pin[0]} / {self.pin[1]} · 연구 완료 {row.get('completed_at') or '미기록'} · 변환 {row.get('exported_at') or '미기록'}").props("data-testid=local-open-pin")
                 with ui.row().classes("items-center"):
                     start = ui.number("조회 시작(초)", value=0, min=0, max=duration).classes("w-28")
-                    end = ui.number("조회 끝(초)", value=min(duration, 15), min=0, max=duration).classes("w-28")
+                    end = ui.number("조회 끝(초)", value=end_s, min=0, max=duration).classes("w-28")
                     at = ui.number("재생 시각(초)", value=0, min=0, max=duration).classes("w-28")
                     node = ui.select(fleet, value=observer, label="관측 기체").classes("min-w-36")
                     target = ui.select(fleet, value=peer, label="상대 기체").classes("min-w-36")
@@ -765,12 +765,12 @@ class Console:
                     ui.code("python -m dashboard_service.import_results <ZIP> --output-root <결과 폴더>")
                 with ui.expansion("기록 시계 · 지표 정의 · 가용 기능").classes("w-full"):
                     dump({k: manifest.get(k) for k in ("clocks", "capabilities", "final_metrics", "metric_definitions")})
-            old_options = self.metric.options
-            options = dict(old_options)
-            for mid, definition in (manifest.get("metric_definitions") or {}).items():
-                if definition.get("comparable", True):
-                    options[mid] = f"{definition.get('label') or mid} ({mid})"
-            self.metric.set_options(options, value=self.metric.value)
+            if hasattr(self, "metric"):  # The archive comparison tab owns this selector.
+                options = dict(self.metric.options)
+                for mid, definition in (manifest.get("metric_definitions") or {}).items():
+                    if definition.get("comparable", True):
+                        options[mid] = f"{definition.get('label') or mid} ({mid})"
+                self.metric.set_options(options, value=self.metric.value)
             settings = {k:manifest.get(k) for k in ("adapter_id","research_version","metadata","series_definitions")}
             settings["metric_definitions"] = {k:v for k,v in manifest.get("metric_definitions", {}).items() if k in SERIES_KEYS}
             await self.canvas.client.run_javascript(f'(async()=>{{const m=await import("/local-render/local_map.js");m.setup({self.canvas.id},{self.canvas_label.id},{self.chart.id},{self.chart_note.id},{json.dumps(settings)},{json.dumps(scene)},{json.dumps(camera)});}})()', timeout=15)
