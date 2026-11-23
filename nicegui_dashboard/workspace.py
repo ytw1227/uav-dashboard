@@ -6,7 +6,7 @@ import asyncio
 from fastapi.responses import RedirectResponse
 from nicegui import app, ui
 
-from .library_view import render_library
+from .library_view import geography, render_library
 from .package_web import PackageMedia, register_package_routes
 from .registry_notice import render_registry_notice
 from .team_region_view import RegionalRuns
@@ -92,7 +92,8 @@ def serve_workspace(args, digests):
 
     async def playback_page(source):
         header(source, team_updates)
-        render_registry_notice(args.service_url)
+        regional_labels = {row["region"]: row["label"] for row in geography(source)} if source == "B" and runs else None
+        render_registry_notice(args.service_url, regional_labels)
         try:
             package = await asyncio.to_thread(media.package, source)
         except FileNotFoundError as exc:

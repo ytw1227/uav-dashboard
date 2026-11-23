@@ -24,6 +24,18 @@ class PresentationNoticeTests(unittest.IsolatedAsyncioTestCase):
     async def poll(self):
         await asyncio.gather(*(tab.refresh() for tab in self.tabs))
 
+    async def test_team_completion_on_regional_page_points_to_existing_card(self):
+        tab = self.tabs[0]
+        tab.region_labels = {"hwajeong": "행신동 · 햇빛마을"}
+        self.publish(1)
+        await self.poll()
+        self.publish(2, ("team-one", "rev-one"))
+        self.api.runs.return_value["runs"][0]["metadata"] = {"region": "hwajeong", "adapter_id": "team-halfsec"}
+        await self.poll()
+        tab.label.set_text.assert_called_with("새 비행 1건 · 지역 카드에서 보기 (행신동 · 햇빛마을)")
+        tab.open_link.set_visibility.assert_called_with(False)
+        self.tabs[1].open_link.set_visibility.assert_called_with(True)
+
     async def test_two_tabs_share_status_and_keep_independent_acknowledgements(self):
         a, b = ("run-one","rev-one"), ("run-one","rev-two")
         self.publish(7, a)
