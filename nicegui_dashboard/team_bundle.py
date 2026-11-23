@@ -12,6 +12,7 @@ import zlib
 
 from .ingest import load_store, publish
 from .managed_service import SERVICE_PROJECT
+from .team_forecast_record import FLEET_FORECAST_HEAD
 
 
 SCHEMA = """
@@ -294,11 +295,7 @@ def publish_capture(record, arrays, scene_path, output_root):
         if threshold is not None:
             manifest["model_threshold"] = threshold
         if "fleet_onset_probability" in arrays:
-            manifest["head_definitions"]["fleet_onset_probability"] = {
-                "window_s": [3, 7], "window_bounds": "[)", "minimum_outage_s": 1,
-                "scope": "next_persistent_search_network_outage",
-                "source": "final_v1.halfsec_joint.model.JointPolicy.forecast/fleet_logits",
-            }
+            manifest["head_definitions"]["fleet_onset_probability"] = FLEET_FORECAST_HEAD
         (bundle/"manifest.json").write_bytes(encode(manifest))
         (bundle/"READY").write_bytes(encode(dict(manifest_sha256=digest(bundle/"manifest.json"))))
         store = load_store(SERVICE_PROJECT, output_root, quota_gib=quota)

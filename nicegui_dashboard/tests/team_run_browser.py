@@ -54,7 +54,8 @@ def make_team_flight(store, sha):
                     decision_interval_s=.5, seed=2026110701, kind="continuous", direction="east_west",
                     split="external_demonstration", mission_completed=True, clocks=clocks, fleet=fleet,
                     final_metrics=final, metric_definitions=definitions,
-                    head_definitions={"fleet_onset_probability":{"window_s":[3,7]}},
+                    head_definitions={"fleet_onset_probability":{"scope":"next_persistent_search_network_outage",
+                                      "window_s":[3,7], "window_bounds":"[)", "minimum_outage_s":1}},
                     event_definitions={"search_outage": "fixture search outage",
                                        "persistent_search_outage": "fixture persistent outage of at least one second"},
                     observation_definitions={"beacon_sinr_db": {"unit": "dB"}})

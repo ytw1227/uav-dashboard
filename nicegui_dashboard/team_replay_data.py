@@ -4,6 +4,7 @@ from functools import lru_cache
 import gzip
 import io
 import json
+import logging
 import math
 from pathlib import Path
 import re
@@ -15,6 +16,7 @@ from fastapi.responses import Response
 
 from result_service.dashboard_contract.validation import confined, read_json, sha256, validate_manifest
 from .package_web import compressed_json
+from .team_forecast_record import FLEET_FORECAST_HEAD, forecast_path, load_forecast
 
 
 ID = re.compile(r"[a-z0-9_-]{8,80}")
@@ -93,10 +95,61 @@ def checked_record(root, signature):
     return display_manifest(m, events), scene, events
 
 
+def forecast_signature(root, manifest):
+    if "fleet_onset_probability" in manifest.get("head_definitions", {}):
+        return None
+    try:
+        path = forecast_path(root.parents[2], root.parent.name, root.name)
+        s = path.stat()
+        return s.st_ino, s.st_ctime_ns, s.st_mtime_ns, s.st_size
+    except (OSError, ValueError):
+        return None
+
+
+@lru_cache(maxsize=12)
+def checked_forecast(root, signature, file_signature):
+    if file_signature is None:
+        return None
+    m, _, _ = checked_record(root, signature)
+    try:
+        path = forecast_path(root.parents[2], m["run_id"], m["bundle_revision"])
+        record = load_forecast(path, m, read_json(root / "READY", 4096)["manifest_sha256"])
+        # The previous RF interval ends at the decision time. Check both the
+        # support and the causal connection mask against the sealed flight.
+        with database(root) as db:
+            frames = db.execute("""SELECT d.time_s, d.payload, f.payload FROM decisions d
+                LEFT JOIN rf_frames f ON f.time_s=d.time_s ORDER BY d.time_s""")
+            rows = zip(frames, record["probabilities"], record["pre_action_connected"], strict=True)
+            for index, ((t, decision, previous), probability, before) in enumerate(rows):
+                row = unpack(decision)
+                connected = bool(unpack(previous)["metrics"]["search_connected"]) if previous is not None else None
+                if (t != index * .5 or row["decision_time_s"] != t or "fleet_onset_probability" in row
+                        or (row["support_count"] > 0) != (probability is not None) or before is not connected):
+                    raise ValueError("단절 예측 시각과 비행의 관측 범위가 일치하지 않습니다.")
+        return record
+    except (KeyError, OSError, TypeError, ValueError, sqlite3.Error, zlib.error) as exc:
+        # A rejected supplement never overrides the original flight channels.
+        logging.getLogger(__name__).warning("비행 %s/%s 예측 기록을 사용할 수 없습니다: %s",
+                                             root.parent.name, root.name, exc)
+        return None
+
+
+def forecast_manifest(root, signature, original):
+    record = checked_forecast(root, signature, forecast_signature(root, original))
+    if record is None:
+        return original
+    manifest = {**original, "head_definitions": {**original.get("head_definitions", {}),
+                                                "fleet_onset_probability": FLEET_FORECAST_HEAD}}
+    if record.get("model_threshold") is not None:
+        manifest["model_threshold"] = record["model_threshold"]
+    return manifest
+
+
 @lru_cache(maxsize=4)
-def overview_bytes(root, signature):
+def overview_bytes(root, signature, forecast_file=None):
     # Each record is already validated compact JSON. Keep only the compressed
     # result in memory while streaming this flight's three ordered channels.
+    supplement = checked_forecast(root, signature, forecast_file)
     buffer = io.BytesIO()
     with database(root) as db, gzip.GzipFile(fileobj=buffer, mode="wb", compresslevel=2, mtime=0) as out:
         out.write(b"{")
@@ -107,7 +160,13 @@ def overview_bytes(root, signature):
             for ordinal, (blob,) in enumerate(db.execute(f"SELECT payload FROM {table} ORDER BY time_s")):
                 if ordinal:
                     out.write(b",")
-                out.write(raw_json(blob))
+                if table == "decisions" and supplement is not None:
+                    row = unpack(blob)
+                    row["fleet_onset_probability"] = supplement["probabilities"][ordinal]
+                    row["pre_action_connected"] = supplement["pre_action_connected"][ordinal]
+                    out.write(json.dumps(row, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode())
+                else:
+                    out.write(raw_json(blob))
             out.write(b"]")
         out.write(b"}")
     return buffer.getvalue()
@@ -174,6 +233,7 @@ def register_team_replay_routes(app, output_root):
     def descriptor(rid: str, revision: str):
         from .team_incidents import incident_descriptor
         root, sig, (m, _, events) = record(rid, revision)
+        m = forecast_manifest(root, sig, m)
         keys = ("run_id", "bundle_revision", "adapter_id", "research_version", "region", "map_hash", "seed",
                 "kind", "direction", "split", "mode", "recorded_mode", "export_status", "artifact_kind",
                 "team_commit", "mission_completed", "simulation_end_s", "final_metrics")
@@ -182,7 +242,8 @@ def register_team_replay_routes(app, output_root):
 
     @app.get(prefix + "/manifest", include_in_schema=False)
     def manifest(rid: str, revision: str):
-        return json_response(record(rid, revision)[2][0])
+        root, sig, (m, _, _) = record(rid, revision)
+        return json_response(forecast_manifest(root, sig, m))
 
     @app.get(prefix + "/scene", include_in_schema=False)
     def scene(rid: str, revision: str):
@@ -194,8 +255,8 @@ def register_team_replay_routes(app, output_root):
 
     @app.get(prefix + "/overview", include_in_schema=False)
     def overview(rid: str, revision: str):
-        root, sig, _ = record(rid, revision)
-        return zipped(overview_bytes(root, sig))
+        root, sig, (m, _, _) = record(rid, revision)
+        return zipped(overview_bytes(root, sig, forecast_signature(root, m)))
 
     @app.get(prefix + "/observations", include_in_schema=False)
     def radio(rid: str, revision: str, observer: str, peer: str, start: float = Query(0., alias="from"),

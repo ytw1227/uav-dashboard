@@ -15,8 +15,9 @@ export function teamRisk(manifest, row) {
         detail:'예방 판단에는 편대 모델 출력과 기존 예방 점수를 결합한 값을 사용합니다.',
         label:finite(score)&&finite(threshold)?(score>=threshold?'주의':'낮음'):'미평가'};
     if (!row || !finite(time)) return risk;
-    const horizon = manifest.head_definitions?.fleet_onset_probability?.window_s;
-    if (horizon?.[0] !== 3 || horizon?.[1] !== 7) return risk;
+    const head = manifest.head_definitions?.fleet_onset_probability;
+    if (head?.scope !== 'next_persistent_search_network_outage' || head.minimum_outage_s !== 1 ||
+            head.window_bounds !== '[)' || head.window_s?.[0] !== 3 || head.window_s?.[1] !== 7) return risk;
     if (time <= 0 || row.pre_action_connected === false) {
         risk.probabilityDetail = '새 단절은 판단 직전 수색망이 연결된 경우에 예측합니다.';
         return risk;
