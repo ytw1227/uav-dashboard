@@ -54,6 +54,15 @@ def header(source):
 
 def serve_workspace(args, digests):
     from .replay_view import render_replay
+    from .team_source import TeamSourceError, source_path, source_status
+
+    @app.get("/api/team-source", include_in_schema=False)
+    def connected_team_source():
+        try:
+            info = source_status(source_path())
+        except (OSError, TeamSourceError) as exc:
+            return {"connected": False, "message": str(exc)}
+        return {"connected": True, "repository": info["repository"], "branch": info["branch"], "commit": info["commit"]}
 
     media = PackageMedia({"S": args.s, "B": args.b}, args.codec_dir, digests)
     register_package_routes(app, media)

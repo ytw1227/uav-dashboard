@@ -126,7 +126,7 @@ def load_path_settings(path):
     if not path.is_file():
         return
     settings = json.loads(path.read_text(encoding="utf-8-sig"))
-    allowed = {"UAV_SHARED_S", "UAV_SHARED_B", "UAV_DATA_ROOT", "UAV_SERVICE_PROJECT", "UAV_RESEARCH_CORE"}
+    allowed = {"UAV_SHARED_S", "UAV_SHARED_B", "UAV_DATA_ROOT", "UAV_SERVICE_PROJECT", "UAV_RESEARCH_CORE", "UAV_TEAM_SOURCE"}
     if not isinstance(settings, dict) or settings.keys() - allowed:
         raise ValueError("settings.local.json contains an unrecognized path option")
     for key, value in settings.items():
@@ -139,7 +139,7 @@ def load_path_settings(path):
 def main():
     load_path_settings(PROJECT / "settings.local.json")
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("probe", "serve", "app"))
+    parser.add_argument("command", choices=("probe", "serve", "app", "team-sync", "team-version"))
     parser.add_argument("--source", choices=SOURCES, default="S")
     parser.add_argument("--s", type=Path, default=os.getenv("UAV_SHARED_S") or DATA / "상암DMC_대시보드.html")
     parser.add_argument("--b", type=Path, default=os.getenv("UAV_SHARED_B") or DATA / "UAV_대시보드_v2.html")
@@ -153,6 +153,21 @@ def main():
     parser.add_argument("--region", help="지도 ID. 생략하면 S는 상암 두 비행, B는 카탈로그를 조회합니다.")
     parser.add_argument("--port", type=int, help="대시보드 기본 포트 8092, 자료 연결 확인 기본 포트 8091")
     args = parser.parse_args()
+    if args.command in ("team-sync", "team-version"):
+        from .team_source import TeamSourceError, source_path, source_status, sync_source
+        try:
+            path = source_path()
+            if args.command == "team-sync":
+                print("팀 GitHub에서 최신 코드를 확인하는 중입니다…", flush=True)
+                info = sync_source(path)
+                print("최신 팀 코드를 받았습니다." if info["changed"] else "이미 최신 팀 코드입니다.")
+            else:
+                info = source_status(path)
+            print(f"대시보드에 연결된 팀 코드   {info['branch']} · {info['commit']}")
+            print(f"팀 소스 폴더   {info['path']}")
+        except (OSError, TeamSourceError) as exc:
+            parser.exit(1, f"팀 코드 확인 실패\n{exc}\n")
+        return
     if args.data_root and args.command != "app":
         parser.error("--data-root는 app 실행에 사용하세요.")
     if args.service_url is None and args.data_root is None:
