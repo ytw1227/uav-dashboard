@@ -1,0 +1,15 @@
+/.venv*/
+/data/
+/settings.local.json
+__pycache__/
+*.py[cod]
+.pytest_cache/
+node_modules/
+test-results/
+playwright-report/
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
+Thumbs.db
