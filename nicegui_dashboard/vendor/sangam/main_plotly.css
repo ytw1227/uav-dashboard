@@ -1,0 +1,85 @@
+/* Shared flight workspace. Legacy class names also support preserved exports. */
+.bundang-visual-active .analysis-grid{grid-template-columns:minmax(0,1fr);gap:20px}
+.bundang-visual-active .detail-column{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);align-items:start;gap:20px}
+.bundang-visual-active #mapPanel{border:1px solid #243e51;box-shadow:0 12px 32px #07182718;border-radius:14px;background:#0c1825;color:#e8f3fa}
+.bundang-visual-active #mapPanel>.panel-header{padding:18px 22px;background:#101f2e;border-bottom:1px solid #284153}
+.bundang-visual-active #mapPanel .panel-header h3{font-size:17px;letter-spacing:-.4px;color:#eef8ff}
+.bundang-visual-active #mapPanel .panel-header .eyebrow{color:#8aa8bc;letter-spacing:1.7px;margin-bottom:6px}
+.bundang-visual-active #mapPanel .panel-tools .button{border-color:#355166;background:#172c3e;color:#dcebf5;padding:8px 11px}
+.bundang-visual-active #mapPanel .panel-tools .button:hover{border-color:#65bfd1;background:#213e52}
+.bundang-visual-active #mapPanel .map-view-switch{border-color:#355166}
+.bundang-visual-active #mapPanel .map-view-switch .active{background:#46d6f1;color:#08202d}
+.bundang-visual-active #mapPanel #mapUnit{color:#8faec1;background:#183044}
+.bundang-visual-active #mapPanel .map-wrap{height:clamp(500px,65vh,700px);min-height:480px;max-height:none;background:#0c1825;border:0}
+.bundang-visual-active #mapPanel .map-legend{padding:13px 21px;gap:16px;background:#102131;color:#c0d3e0;font-size:11px;border-top:1px solid #263e51}
+.bundang-visual-active #mapPanel .map-legend .search-dot{background:#46d6f1!important}
+.bundang-visual-active #mapPanel .map-legend .relay-dot{background:#ffb44c!important;border-radius:1px;transform:rotate(45deg)}
+.bundang-visual-active #mapPanel .map-legend .line.teal{background:#477e93}
+.bundang-visual-active #mapPanel .map-legend .line.bm-selected{background:#64efff;height:3px}
+.bundang-visual-active #mapPanel .map-legend .line.bm-loss{background:none;border-top:2px dashed #ff667b}
+.bundang-visual-active #mapPanel .map-legend .line.amber{border-color:#ffc367}
+.bundang-visual-active #mapPanel .map-legend .line.purple{background:#d79aff}
+.bundang-visual-active #mapPanel .map-legend .line.navy{background:#c1e0ff}
+.bundang-visual-active #mapPanel .map-legend .hatched{background:#786952;background-image:none;border:1px solid #b29b74}
+.bundang-visual-active:not(.bm-show-actions) #mapPanel .bm-legend-actions{display:none}
+.bundang-visual-active #mapPanel .layer-toggles{padding:12px 20px;background:#102131;border-top:1px solid #20394b;color:#b7cedc;font-size:10px}
+.bundang-visual-active #mapPanel .layer-toggles input{accent-color:#46d6f1}
+.bundang-visual-active #mapPanel .layer-toggles em{color:#d79aff}
+.bundang-visual-active #mapPanel .layer-toggles>span{color:#819fb2}
+.bundang-visual-active #mapPanel .playback{padding:15px 20px;background:#142a3c;border-color:#284356}
+.bundang-visual-active #mapPanel .play-button{background:#46d6f1;color:#092337;width:36px;height:34px}
+.bundang-visual-active #mapPanel .playback .icon-button{color:#c0d6e3}
+.bundang-visual-active #mapPanel .playback input[type=range]{accent-color:#46d6f1}
+.bundang-visual-active #mapPanel .playback input[type=number],.bundang-visual-active #mapPanel .playback select{background:#102333;border-color:#3c5c70;color:#e6f5ff}
+.bundang-visual-active #mapPanel .playback .unit{color:#9ab5c8}
+.bundang-map-wrap .bm-plot{position:absolute;inset:0;width:100%;height:100%;z-index:0}
+.bundang-map-wrap .bm-plot .modebar{display:none!important}
+.bundang-map-wrap .map-topline{z-index:2;top:18px;left:20px;right:20px}
+.bundang-map-wrap .map-topline>span{padding:8px 12px;border-radius:7px;border:1px solid #345469;font-size:12px;background:#102638ed;color:#c6dfed;box-shadow:0 3px 12px #0003}
+.bundang-map-wrap .map-topline #mapClock{font-size:17px;letter-spacing:.5px;color:#f2faff}
+.bundang-map-wrap .map-topline .disconnected{color:#ffabb6;background:#361c2c;border-color:#8b4555}
+.bm-toolbar{position:absolute;bottom:45px;left:18px;right:18px;z-index:3;display:flex;justify-content:space-between;gap:10px;pointer-events:none}
+.bm-tools-group{display:flex;gap:3px;border:1px solid #38566a;background:#102638f2;padding:4px;border-radius:9px;box-shadow:0 5px 18px #0003;pointer-events:auto}
+.bm-toolbar button{border:0;border-radius:6px;padding:8px 10px;background:transparent;font-size:11px;font-weight:650;color:#c0d5e2;white-space:nowrap}
+.bm-toolbar button:hover{background:#254357;color:#fff}
+.bm-toolbar button[aria-pressed=true]{background:#46d6f1;color:#092231}
+.bm-status{position:absolute;top:70px;left:20px;z-index:2;display:flex;flex-direction:column;gap:7px;pointer-events:none}
+.bm-engine{font-size:10px;font-weight:700;letter-spacing:1px;color:#8dafc2}
+.bm-pair{color:#98f5ff;font-size:12px;font-weight:700;border-left:3px solid #64efff;padding:6px 9px;background:#0c2335dd;border-radius:0 5px 5px 0;align-self:flex-start}
+.bm-pair[data-down=true]{color:#ffb8c3;border-left-color:#ff667b;background:#321d2cd9}
+.bm-gesture-held .map-topline{visibility:hidden}
+.bm-gesture-note{max-width:min(440px,calc(100vw - 60px));color:#e6f4ff;background:#102b3ee8;border:1px solid #526e84;border-radius:5px;padding:6px 9px;font-size:12px;line-height:1.5}
+.bm-gesture-note[hidden]{display:none}
+.bundang-map-wrap .map-help{bottom:13px;left:20px;right:auto;transform:none;max-width:calc(100% - 40px);white-space:normal;font-size:11px;color:#89aabd;z-index:2;background:#0c1825cf;border-radius:4px;padding:4px 6px}
+.bm-error{position:absolute;inset:130px 28px auto;z-index:5;padding:18px;border:1px solid #925262;border-radius:10px;background:#351e2b;color:#ffd0d8}
+.bm-recovery{position:absolute;left:50%;top:48%;transform:translate(-50%,-50%);z-index:4;max-width:85%;padding:13px 18px;border:1px solid #6bdceb;border-radius:8px;background:#17384bf2;color:#e6faff;box-shadow:0 5px 30px #0005;font-weight:650;cursor:pointer}
+.bm-recovery[hidden],.bm-error[hidden],.bm-toolbar[hidden],.bm-status[hidden],.bm-plot[hidden]{display:none}
+.bundang-visual-active #mapPanel:fullscreen,.bundang-visual-active #mapPanel.bm-expanded{display:flex;flex-direction:column;width:100%;height:100%;border-radius:0;background:#0c1825;overflow:auto}
+.bundang-visual-active #mapPanel:fullscreen .map-wrap,.bundang-visual-active #mapPanel.bm-expanded .map-wrap{flex:1 1 auto;height:auto;min-height:280px;max-height:none}
+.bundang-visual-active #mapPanel:fullscreen>.panel-header,.bundang-visual-active #mapPanel.bm-expanded>.panel-header,.bundang-visual-active #mapPanel:fullscreen>.map-legend,.bundang-visual-active #mapPanel.bm-expanded>.map-legend,.bundang-visual-active #mapPanel:fullscreen>.layer-toggles,.bundang-visual-active #mapPanel.bm-expanded>.layer-toggles,.bundang-visual-active #mapPanel:fullscreen>.playback,.bundang-visual-active #mapPanel.bm-expanded>.playback{flex:0 0 auto}
+.bundang-visual-active #mapPanel.bm-expanded{position:fixed;inset:0;z-index:10000}
+@media(max-width:1050px){.bm-toolbar{bottom:45px;flex-wrap:wrap;justify-content:center}.bm-toolbar button{padding:7px 8px}.bundang-visual-active .detail-column{grid-template-columns:minmax(0,1fr)}}
+@media(max-width:600px){.bundang-visual-active #mapPanel>.panel-header{padding:15px;flex-wrap:wrap}.bundang-visual-active #mapPanel .panel-header h3{font-size:16px}.bundang-visual-active #mapPanel .map-wrap{height:540px;min-height:480px}.bm-toolbar{left:9px;right:9px;bottom:48px;gap:5px}.bm-tools-group{padding:3px;gap:0}.bm-toolbar button{font-size:10px;padding:7px}.bm-status{left:12px;top:66px}.bundang-map-wrap .map-topline{left:12px;right:12px}.bundang-map-wrap .map-help{left:8px;bottom:10px;font-size:10px}.bundang-visual-active #mapPanel .map-legend{padding:12px;font-size:10px;gap:10px}.bundang-visual-active #mapPanel .layer-toggles{padding:10px 12px}.bundang-visual-active #mapPanel .playback{padding:12px 10px}.bundang-visual-active #mapPanel:fullscreen .map-wrap,.bundang-visual-active #mapPanel.bm-expanded .map-wrap{min-height:260px}}
+
+@media(max-width:1100px){.bundang-visual-active .sidebar #demoFilters{grid-template-columns:repeat(2,minmax(0,1fr))}}
+
+/* Shared presentation interactions. Camera gestures and live flight labels have
+   independent layers; labels never intercept map or evidence-card input. */
+.bm-presentation .bm-tools-group select{align-self:center;max-width:130px;border:1px solid #426277;border-radius:5px;background:#112b3f;color:#cee8f4;padding:6px 5px;font:inherit;font-size:10px;font-weight:600;line-height:1.4;cursor:pointer}
+.bm-presentation .bm-tools-group select:disabled{opacity:.55;cursor:default}
+.bm-live-labels{position:absolute;inset:0;z-index:1;overflow:hidden;pointer-events:none}
+.bm-live-labels[hidden]{display:none}
+.bm-live-label{position:absolute;border:1px solid var(--drone-color);background:#102b3eea;color:#f3fbff;border-radius:3px;font-size:12px;font-weight:750;padding:3px 5px;white-space:nowrap;transform:translate(13px,14px);box-shadow:0 2px 8px #0005;pointer-events:none}
+.bm-live-label[data-primary=true]{transform:translate(calc(-100% - 13px),calc(-100% - 14px))}
+.map-legend .comm-dot,.incident-comm-key .comm-dot{display:inline-block;width:10px;height:10px;border-radius:50%;box-shadow:inset 0 0 0 1px #ffffff60}
+.comm-dot.search-up{background:#45d9c8}.comm-dot.relay-up{background:#a3afff}.comm-dot.risk{background:#ffd44f}.comm-dot.down{background:#ff6677}
+.aircraft-readout{display:block;margin:0;padding:5px 16px 7px;background:#102332;color:#d5e5ee;font-size:11px;line-height:1.5;overflow-wrap:anywhere}
+.aircraft-readout::before{content:'';display:inline-block;width:8px;height:8px;margin-right:6px;border-radius:50%;background:var(--state-color,#9baaba)}
+.aircraft-readout[hidden]{display:none}
+.bundang-visual-active #mapPanel .map-legend .map-role{color:#d1e1ea}
+.bm-detour:not([hidden]){display:block;margin-top:3px;font-size:11px;font-weight:550;line-height:1.4;color:#f1e6eb}
+.incident-comm-key{display:flex;flex-wrap:wrap;gap:12px;padding:9px 16px;background:#102332}
+.incident-comm-key .map-role{color:#d1e1ea;font-size:11px}
+.bm-presentation .bm-plot:focus{outline:none}
+.bm-presentation .bm-plot:focus-visible{outline:2px solid #5ad6e8;outline-offset:-3px}
+@media(max-width:600px){.bm-presentation .bm-tools-group select{max-width:112px;font-size:10px;padding:5px 2px}.bm-presentation .bm-toolbar button{padding:7px 5px}.bm-live-label{font-size:11px;padding:2px 4px}}

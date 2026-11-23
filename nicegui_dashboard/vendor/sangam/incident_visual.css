@@ -1,0 +1,64 @@
+/* Shared recorded-scene display. All measurements and semantic traces are unchanged. */
+#incidentDialog.uav-visual-incident{width:min(1680px,97vw);max-width:1680px;border:1px solid #7f95a7;border-radius:16px;background:#edf2f6;box-shadow:0 24px 90px #07152588}
+.uav-visual-incident .incident-head{padding:15px 20px;background:#122b3e;border-bottom:1px solid #294b62}
+.uav-visual-incident .incident-head h2{color:#f4faff;letter-spacing:-.6px}
+.uav-visual-incident .incident-controls{background:#edf2f6;padding-top:9px;padding-bottom:11px}
+.uav-visual-incident #incidentClock{color:#143f5b;font-size:18px;font-weight:750;letter-spacing:-.6px;min-width:76px}
+.uav-visual-incident .incident-layout{gap:16px;grid-template-columns:minmax(0,1.65fr) minmax(340px,1fr)}
+.uav-visual-incident .incident-card{border-color:#cedbe5;border-radius:13px;box-shadow:0 5px 18px #18354d09}
+.uav-visual-incident .incident-card-head{padding:15px 18px;border-bottom:1px solid #e0e8ef}
+.uav-visual-incident .incident-card-head h3{font-size:15px;letter-spacing:-.3px}
+.uav-visual-incident .incident-spatial{background:#0c1825;border-color:#2f4659}
+.uav-visual-incident .incident-spatial .incident-card-head{background:#132b3d;border-color:#2b4559;color:#eaf5ff;padding:15px 18px}
+.uav-visual-incident .incident-spatial .incident-card-head h3{color:#f1f8ff}
+.uav-visual-incident .incident-spatial .map-role{color:#bbcedd;font-size:11px}
+.uav-visual-incident .incident-spatial .search-dot{background:#46d6f1!important}
+.uav-visual-incident .incident-spatial .relay-dot{background:#ffb44c!important;border-radius:2px;transform:rotate(45deg);width:8px;height:8px}
+.uav-visual-incident .incident-focus{padding:12px 17px;background:#102332;border-block-color:#294255}
+.uav-visual-incident .incident-focus-summary{gap:7px 10px;line-height:1.7}
+.uav-visual-incident #incidentFocusEvent{color:#96bdce}
+.uav-visual-incident #incidentFocusLabel{color:#c7dce8}
+.uav-visual-incident #incidentFocusValue{color:#f1f8fd;font-size:14px}
+.uav-visual-incident #incidentFocusDetail{color:#9db8ca;line-height:1.6}
+.uav-visual-incident .incident-focus:is([data-relation=previous],[data-relation=next]){background:#362c1d;border-color:#6d5734}
+.uav-visual-incident .incident-focus:is([data-relation=previous],[data-relation=next]) #incidentFocusEvent{color:#ffcf8b}
+.uav-visual-incident #incidentMapHost{position:relative;overflow:hidden;background:#0c1825;height:clamp(430px,54vh,620px)}
+.uav-visual-incident #incidentMap{height:100%;min-height:0}
+.uav-visual-incident .incident-camera-tools{position:absolute;top:14px;left:14px;display:flex;gap:3px;padding:5px;background:#122a3df2;border:1px solid #345269;border-radius:10px;box-shadow:0 4px 14px #0004;z-index:3}
+.uav-visual-incident .incident-camera-button{font-family:inherit;font-size:11px;font-weight:650;line-height:1.25;padding:8px 11px;border:0;border-radius:6px;background:transparent;color:#aec5d7;cursor:pointer}
+.uav-visual-incident .incident-camera-button[aria-pressed=true]{background:#24546b;color:#eefcff;box-shadow:inset 0 0 0 1px #42778d}
+.uav-visual-incident .incident-camera-button:hover{background:#214359;color:#fff}
+.uav-visual-incident .incident-camera-button:focus-visible{outline:3px solid #46d6f1;outline-offset:2px}
+.uav-visual-incident .incident-map-clock{position:absolute;top:14px;right:16px;display:grid;gap:4px;padding:9px 12px;border-radius:9px;background:#112a3de8;border:1px solid #345269;color:#fff;pointer-events:none;z-index:3;text-align:right;font-variant-numeric:tabular-nums}
+.uav-visual-incident .incident-map-clock small{font-size:9px;letter-spacing:1px;color:#9db9cc}
+.uav-visual-incident .incident-map-clock output{font-size:19px;font-weight:700;line-height:1.2;letter-spacing:-.6px}
+.uav-visual-incident .incident-height-key{position:absolute;bottom:12px;left:16px;right:16px;display:flex;align-items:center;gap:12px;font-size:10px;color:#a8bdcc;pointer-events:none;z-index:3}
+.uav-visual-incident .incident-height-key span{display:flex;align-items:center;gap:5px;background:#0e2435df;padding:5px 7px;border:1px solid #2f4859;border-radius:5px}
+.uav-visual-incident .incident-height-key i{width:9px;height:9px;background:#40596c;border:1px solid #69859b;border-radius:2px;display:inline-block}
+.uav-visual-incident .incident-height-key i.estimated{background:#77715b;border-color:#a39a7a}
+.uav-visual-incident .incident-height-key small{margin-left:auto;background:#0e2435df;padding:5px 7px;border-radius:5px}
+.uav-visual-incident .incident-map-tools{padding:10px 16px;background:#102332;border-top:1px solid #294255}
+.uav-visual-incident #incidentLineKey{color:#c9dbe7;font-size:12px}
+.uav-visual-incident #incidentLineKey .lost:before{border-color:#ff626b}
+.uav-visual-incident #incidentLineKey .moved:before{border-color:#b68cff}
+.uav-visual-incident #incidentLineKey .restored:before{border-color:#54e6a3}
+.uav-visual-incident #incidentLineKey .tracked:before{border-color:#8ba8c0}
+.uav-visual-incident .incident-map-tools .button{background:#18384e;border-color:#3c6078;color:#d9ecfa}
+.uav-visual-incident .map-gesture{padding:0 16px 11px;color:#829eb2;font-size:10px;line-height:1.65}
+.uav-visual-incident .incident-narrative{padding:0 14px 14px}
+.uav-visual-incident #incidentDiagnosis{background:#f7fafc;border-top-color:#2f5b78}
+.uav-visual-incident .incident-stage{padding:12px;border-radius:8px;margin-bottom:4px}
+.uav-visual-incident .incident-stage[aria-current=step]{background:#e8f2fa;border-color:#3885b1;box-shadow:inset 2px 0 #3885b1}
+.uav-visual-incident .incident-stage b{font-size:13px}
+.uav-visual-incident .incident-stage small{font-size:11px;line-height:1.65}
+.uav-visual-incident .incident-radio{padding:16px 18px}
+.uav-visual-incident .incident-pair{border-color:#d2dfe9;border-radius:10px}
+@media(max-width:1050px){.uav-visual-incident .incident-layout{grid-template-columns:minmax(0,1fr)}.uav-visual-incident #incidentMapHost{height:500px}.uav-visual-incident .incident-narrative{grid-column:1}.uav-visual-incident .incident-radio{grid-column:1}}
+/* A previously wide Plotly canvas must not become the mobile grid's minimum width. */
+@media(max-width:840px){
+ .uav-visual-incident .incident-body{grid-template-columns:minmax(0,1fr);width:100%;min-width:0;box-sizing:border-box}
+ .uav-visual-incident .incident-body>*,.uav-visual-incident .incident-card,.uav-visual-incident #incidentMapHost,.uav-visual-incident #incidentMap{width:100%;min-width:0;max-width:100%;box-sizing:border-box}
+ .uav-visual-incident .incident-controls>*,.uav-visual-incident .incident-controls label{min-width:0;max-width:100%}
+ .uav-visual-incident .incident-controls label select{width:100%;min-width:0}
+}
+@media(max-width:600px){#incidentDialog.uav-visual-incident{border-radius:10px}.uav-visual-incident #incidentMapHost{height:420px}.uav-visual-incident .incident-card-head{padding:12px}.uav-visual-incident .incident-spatial .incident-card-head{padding:12px;gap:8px}.uav-visual-incident .incident-camera-tools{left:8px;top:8px;gap:2px;padding:4px}.uav-visual-incident .incident-camera-button{padding:8px 8px;font-size:10px}.uav-visual-incident .incident-map-clock{right:10px;top:59px;padding:7px 9px}.uav-visual-incident .incident-map-clock output{font-size:16px}.uav-visual-incident .incident-map-clock small{display:none}.uav-visual-incident .incident-height-key{left:9px;right:9px;gap:5px;font-size:9px}.uav-visual-incident .incident-height-key small{display:none}}

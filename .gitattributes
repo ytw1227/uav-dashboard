@@ -1,0 +1,10 @@
+* text=auto
+*.py text eol=lf
+*.js text eol=lf
+*.mjs text eol=lf
+*.css text eol=lf
+*.md text eol=lf
+*.cmd text eol=crlf
+*.gz -text
+# Baseline export files are checked against their original byte-level hashes.
+nicegui_dashboard/vendor/** -text

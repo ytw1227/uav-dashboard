@@ -1,0 +1,10 @@
+{
+  "name": "uav-dashboard-browser-tests",
+  "private": true,
+  "scripts": {
+    "smoke": "node default_routes.cjs"
+  },
+  "devDependencies": {
+    "playwright-core": "1.62.1"
+  }
+}

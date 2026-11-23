@@ -1,0 +1,43 @@
+.uav-replay {
+    display: block;
+    width: 100%;
+    min-width: 0;
+    container-type: inline-size;
+    color: #172b43;
+    background: #f2f5f8;
+}
+.uav-replay-section {
+    width: 100%;
+    min-width: 0;
+}
+.uav-replay .page-heading {
+    margin-top: 0;
+}
+.uav-replay[data-load-state="boot"] .uav-replay-section {
+    visibility: hidden;
+}
+.uav-replay .hidden, .uav-replay [hidden] {
+    display: none !important;
+}
+.uav-replay #uavReplayStatus {
+    padding: 16px;
+    color: #315c78;
+}
+.uav-replay[data-load-state="loading"] #analysisView,
+.uav-replay[data-load-state="error"] #analysisView {
+    /* Keep the measured drawing area while concealing the previous flight. */
+    visibility: hidden;
+}
+@container (max-width: 940px) {
+    .uav-replay .analysis-grid {
+        grid-template-columns: minmax(0,1fr);
+    }
+    .uav-replay .main-column, .uav-replay .detail-column {
+        min-width: 0;
+    }
+}
+.replay-graphics-note { margin: 0; padding: 12px 16px; background: #f1f6f8; color: #304c59; line-height: 1.55; }
+.uav-replay[data-graphics="canvas"] #incidentMapHost,
+.uav-replay[data-graphics="canvas"] .incident-spatial .incident-comm-key,
+.uav-replay[data-graphics="canvas"] .incident-spatial .incident-map-tools,
+.uav-replay[data-graphics="canvas"] .incident-spatial .map-gesture { display: none; }

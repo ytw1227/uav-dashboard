@@ -1,0 +1,46 @@
+#incidentRadioStack { min-width:0; padding:10px 13px 12px; }
+.ir-heading,.ir-pair-head,.ir-key,.ir-metric-label,.ir-extra-label {
+    display:flex; align-items:center; flex-wrap:wrap;
+}
+.ir-heading { justify-content:space-between; gap:5px 12px; }
+#incidentDialog .ir-heading h3 { font-size:15px; margin:0; color:#193d50; }
+.ir-metric-label,.ir-extra-label { gap:6px; font-size:12px; color:#425868; }
+#incidentDialog .ir-metric-label select,#incidentDialog .ir-extra-label select {
+    width:auto; max-width:100%; min-width:0; min-height:28px; padding:2px 19px 2px 7px;
+    border:1px solid #c7d6df; border-radius:5px; background-color:#fff; color:#253f50;
+}
+.ir-key { gap:3px 11px; margin:4px 0 8px; color:#435765; font-size:11.5px; }
+.ir-key-item { white-space:nowrap; }
+.ir-key-item::before { content:''; display:inline-block; width:13px; height:4px; margin-right:4px; vertical-align:middle; }
+.ir-key-item[data-kind="network"]::before { background:#f7ede1; height:9px; border:1px solid #dbccb9; border-radius:1px; }
+.ir-key-item[data-kind="selected"]::before { background:#fae6d1; height:9px; border:1.2px solid #ad6b36; border-radius:1px; }
+.ir-explanation { margin:-2px 0 6px; font-size:11.5px; line-height:1.4; color:#465d69; }
+.ir-key-item[data-kind="up"]::before { background:#79b2a5; }
+.ir-key-item[data-kind="down"]::before { background:#bc504a; }
+.ir-info { color:#4e6370; }
+.ir-group + .ir-group { margin-top:12px; }
+#incidentDialog .ir-group-title { margin:0 0 5px; color:#324c5c; font-size:12px; font-weight:700; }
+.incident-pair-card { min-width:0; padding:6px 0 0; border:1px solid #d5e0e5; border-radius:6px; background:#fff; overflow:hidden; }
+.incident-pair-card+.incident-pair-card { margin-top:6px; }
+.ir-pair-head { padding:0 9px; gap:3px 12px; min-height:21px; }
+.ir-pair-name { color:#193e52; font-size:13px; font-weight:700; }
+.ir-direction { display:inline-flex; align-items:center; gap:4px; color:#3f5260; line-height:1.35; }
+.ir-direction b { color:#274555; font-size:11.5px; white-space:nowrap; }
+.ir-direction::before { content:''; width:7px; height:7px; flex:none; }
+.ir-direction[data-dir="0"]::before { background:#14609a; border-radius:50%; }
+.ir-direction[data-dir="1"]::before { background:#a34d0a; transform:rotate(45deg); width:6px; height:6px; }
+.ir-last-value { font-size:11.5px; font-variant-numeric:tabular-nums; }
+.incident-pair-plot,#incidentDialog .incident-pair-plot#incidentSignal { width:100%; height:clamp(104px,14.8vh,148px); }
+.ir-extras { margin:10px 0 0; border-top:1px solid #d7e2e6; padding-top:7px; }
+.ir-extras summary,.ir-reference { color:#315d6b; font-family:inherit; font-size:12px; line-height:1.55; font-weight:600; cursor:pointer; }
+.ir-extras summary { font-size:12px; }
+.ir-reference { padding:2px 6px; border:1px solid #d0e0da; border-radius:4px; background:#f5faf8; }
+.ir-extra-content { padding:7px 0 1px; }
+.ir-extra-content .incident-pair-card { margin-top:5px; }
+.ir-notice { font-size:12px; color:#4e606e; margin:6px 0; }
+@media(max-width:620px) {
+    #incidentRadioStack { padding:8px; }
+    .ir-pair-head { gap:2px 9px; }
+    .ir-last-value { font-size:11px; }
+    .incident-pair-plot,#incidentDialog .incident-pair-plot#incidentSignal { height:118px; }
+}

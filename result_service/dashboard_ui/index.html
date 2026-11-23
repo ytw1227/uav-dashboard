@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light"><title>Final V1 · UAV 연구 대시보드</title><link rel="stylesheet" href="/styles.css"></head>
+<body>
+<header class="topbar"><a class="brand" href="/" aria-label="SWARM 대시보드"><span class="brand-icon">✣</span><span>SWARM<span class="brand-sub">RESEARCH CONSOLE</span></span></a><div class="workspace-label"><span class="eyebrow">UAV COMMUNICATION LAB</span><strong>군집 통신 · 예측 · 재배치</strong></div><div class="top-actions"><span id="serviceState" class="status-pill"><i></i> 서비스 연결 중</span><button id="jobsOpen" class="button ghost">실행 관리</button><button id="shareButton" class="button">↗ 스냅샷 공유</button></div></header>
+<div class="app-shell">
+<aside class="sidebar"><div class="sidebar-heading"><span class="eyebrow">RESULT LIBRARY</span><div><h2>지도별 시뮬레이션</h2><button id="refreshButton" class="icon-button" title="완료 결과 다시 검색" aria-label="완료 결과 다시 검색">↻</button></div></div><label class="library-scope">보기<select id="libraryScope"><option value="representative">Final V1 지도 시연</option><option value="archive">과거 버전 · 기타 결과</option><option value="all">전체 시뮬레이션</option></select></label><label class="search-field"><span>⌕</span><input id="searchInput" placeholder="지역 이름 검색" aria-label="실행 검색"></label><div id="demoFilters" class="filter-grid demo-filters">
+  <label>시·도<select id="provinceFilter"><option value="">전체 시·도</option></select></label>
+  <label>시·군·구<select id="districtFilter" disabled><option value="">시·도 먼저 선택</option></select></label>
+  <label>비행 방식<select id="flightFilter"><option value="v21">V21 적용</option><option value="nominal">기본 · 미적용</option></select></label>
+  <label>성능 기준<select id="performanceFilter"><option value="">전체 성능</option><option value="pdr">PDR 95% 이하</option><option value="search_connected_mean">CTR 95% 이하</option></select></label>
+</div>
+<div id="archiveFilters" class="hidden"><div class="filter-grid"><select id="regionFilter" aria-label="지도 필터"><option value="">모든 지도</option></select><select id="modeFilter" aria-label="모델 필터"><option value="">모든 모델</option></select><select id="splitFilter" aria-label="데이터 분할 필터"><option value="">모든 분할</option></select><select id="missionFilter" aria-label="임무 결과 필터"><option value="">모든 임무 결과</option><option value="success">임무 완료</option><option value="failure">임무 미완료</option></select></div><details class="more-filters"><summary>시나리오 · 코드 · seed 필터</summary><div class="filter-grid"><select id="kindFilter" aria-label="간섭 시나리오 필터"><option value="">모든 간섭</option></select><select id="directionFilter" aria-label="배치 방향 필터"><option value="">모든 배치</option></select><select id="codeFilter" aria-label="코드 버전 필터"><option value="">모든 코드</option></select><input id="seedFilter" placeholder="seed" aria-label="seed 필터"></div></details></div><label class="toggle-row"><input id="followLatest" type="checkbox"><span>최신 결과 따라가기</span><span id="followStateBadge" class="tag">기본 OFF</span></label><div id="thresholdSummary" class="threshold-summary hidden" aria-live="polite"></div><div class="list-caption"><span id="runCount">결과 검색 중</span></div><div id="runList" class="run-list" aria-live="polite"></div><details id="registryErrors" class="hidden" style="padding:10px 16px;font-size:10px;color:#8f4d4d"><summary>등록 오류와 보류 사유</summary><div id="registryErrorList"></div></details><div class="sidebar-footer"><span class="tiny-dot"></span><div><strong>완료 후 결과 갱신</strong><small id="lastRefresh">실제 완료시각이 없는 과거 결과도 보존합니다.</small></div></div></aside>
+<main>
+<div id="newBanner" class="new-banner hidden" role="status"></div><div id="notice" class="notice hidden" role="status"></div>
+<div id="filterEmptyNote" class="notice hidden" role="status"></div>
+<section class="page-heading"><div><div class="eyebrow" id="runEyebrow">SAVED RESULT EXPLORER</div><h1 id="runTitle">연구 결과를 불러오는 중</h1><p id="runSubtitle">원본 로그와 같은 시간축에서 통신, 예측, 이동을 살펴봅니다.</p></div><div class="run-meta"><span id="modeBadge" class="tag">저장 결과</span><span id="revisionBadge" class="tag muted" title="시연 결과는 별도 시험 성능이 아닙니다">저장 결과</span></div></section>
+<nav class="tabs" aria-label="분석 화면"><button data-tab="map" class="active">지도 · 사건<span>01</span></button><button data-tab="compare">실험 비교<span>02</span></button><button data-tab="performance">현재 모델<span>03</span></button><div class="tab-note">사후 분석 <span>·</span> 원본 연구 결과 유지</div></nav>
+<section id="analysisView">
+  <div id="flightModes" class="flight-modes hidden">
+    <div class="flight-buttons" role="group" aria-label="비행 방식">
+      <button type="button" id="flightNominal" aria-pressed="false">기본 대형 · 미적용</button>
+      <button type="button" id="flightV21" aria-pressed="false">예측·재배치 적용 · V21</button>
+    </div>
+    <span id="flightTabNote" class="flight-note" role="status"></span>
+  </div>
+  <div class="metric-strip" id="metricCards"></div><div class="analysis-grid"><div class="main-column"><section id="mapPanel" class="panel map-panel"><div class="panel-header"><div><span class="eyebrow">비행 재생</span><h3 id="mapHeading">비행 경로와 네트워크</h3></div><div class="panel-tools"><div class="map-view-switch" role="group" aria-label="지도 보기"><button class="button compact active" data-map-view="3d" aria-pressed="true">3D</button><button class="button compact" data-map-view="2d" aria-pressed="false">2D</button></div><button id="fitMap" class="button compact">지도 맞춤</button><button id="expandMap" class="button compact">크게 보기</button><span id="mapUnit" class="tag">LOCAL · m</span></div></div><div class="map-wrap"><canvas id="mapCanvas" aria-label="건물, UAV 위치와 링크 지도" tabindex="0"></canvas><div class="map-topline"><span id="mapClock">00:00.0</span><span id="networkState">연결 상태 —</span></div><div id="mapEmpty" class="map-empty">실행을 선택하면 실제 지도와 비행 경로가 표시됩니다.</div><div class="map-scale" id="mapScale"></div><div id="mapCompass" class="map-compass hidden">N ↑</div><div id="mapHelp" class="map-help">드래그 이동 · Shift+드래그 회전 · 휠 확대</div></div><div class="map-legend"><span><i class="dot teal"></i> 수색 UAV</span><span><i class="dot navy"></i> 중계 UAV</span><span><i class="line teal"></i> 가용 링크</span><span><i class="line dashed amber"></i> 요청 보정</span><span><i class="line purple"></i> 적용 보정</span><span><i class="line navy"></i> 실제 변위</span><span><i class="hatched"></i> 추정 높이</span></div><div class="layer-toggles"><label><input type="checkbox" data-layer="tracks" checked> 비행 궤적</label><label><input type="checkbox" data-layer="links" checked> 가용 링크</label><label><input type="checkbox" data-layer="actions" checked> 이동 벡터</label><label><input type="checkbox" data-layer="future"> 종료까지의 궤적 <em>사후</em></label><span id="positionNote">위치 경계 사이: 화면용 선형 보간</span></div><div class="playback"><button id="playButton" class="play-button" aria-label="저장 로그 재생">▶</button><button id="stepBack" class="icon-button" aria-label="0.5초 이전">‹</button><button id="stepForward" class="icon-button" aria-label="0.5초 이후">›</button><input id="timeSlider" type="range" min="0" max="1" step="0.5" value="0" aria-label="시뮬레이션 시각"><input id="timeInput" type="number" min="0" step="0.5" value="0" aria-label="선택 시각 초"><span class="unit">s</span><select id="speedSelect" aria-label="재생 배속"><option value="1">1×</option><option value="5">5×</option><option value="10" selected>10×</option><option value="30">30×</option></select></div></section>
+<section id="eventContext" class="panel hidden" tabindex="-1"><div class="panel-header"><div><span class="eyebrow">사건 상세</span><h3 id="eventContextTitle">사건 전 · 발생 시점 · 이후</h3></div><span class="tag">사건 전후 연결 그룹</span></div><p class="panel-footnote">같은 그룹에 표시된 드론은 통신 경로로 연결돼 있습니다. 사건 전·발생 시점·이후에 그룹이 어떻게 달라졌는지 확인하세요.</p><div id="eventSnapshots" class="event-snapshots"></div><p class="panel-footnote">사건 표식은 관련 UAV의 대표 위치입니다. 물리적 고장 지점이나 단절 원인을 뜻하지 않습니다.</p></section>
+<section class="panel chart-panel"><div class="panel-header"><div><span class="eyebrow">시간별 변화</span><h3>핵심 지표의 시간별 변화</h3></div><div class="panel-tools"><select id="seriesSelect" aria-label="시간 지표 선택"></select><button id="fullWindow" class="button compact">전체 구간</button></div></div><div id="metricChart" class="chart"></div><div id="chartFootnote" class="panel-footnote">시각을 클릭하면 지도와 상세 정보가 함께 이동합니다.</div></section>
+</div><aside class="detail-column">
+  <section class="panel inspector" aria-labelledby="inspectorHeading">
+    <div class="panel-header">
+      <h3 id="inspectorHeading">선택한 드론의 통신과 이동</h3>
+      <span id="detailTime" class="tag" aria-label="선택 시각">0.0 s</span>
+    </div>
+    <div class="selection-controls">
+      <label>관측 드론<select id="nodeSelect"></select></label>
+      <label>상대 드론<select id="peerSelect"></select></label>
+    </div>
+    <div id="nodeDetail" class="detail-content"></div>
+    <h4 class="subsection-title">두 드론 사이의 통신 상태</h4>
+    <div id="rfDetail" class="detail-content"></div>
+    <h4 id="predictionHeading" class="subsection-title">두 드론 사이의 단절 가능성</h4>
+    <div id="predictionDetail" class="detail-content"></div>
+    <div id="controlTraceBlock" class="hidden">
+      <h4 class="subsection-title">중계 드론의 추가 경로 보정 판단</h4>
+      <div id="controlTraceDetail" class="detail-content"></div>
+    </div>
+    <h4 class="subsection-title">선택한 드론의 경로 보정과 실제 이동</h4>
+    <div id="actionDetail" class="detail-content"></div>
+  </section>
+<section class="panel event-panel"><div class="panel-header"><div><span class="eyebrow">단절 · 재배치</span><h3>사건 타임라인 <span id="eventCount" class="count">0</span></h3></div><button id="clearEvent" class="button compact">선택 해제</button></div><select id="eventTypeFilter" aria-label="사건 종류 필터"><option value="">모든 사건</option></select><div id="eventList" class="event-list"></div></section></aside></div><section class="panel provenance-panel"><details><summary>출처 · 기록 주기 · 지표 정의 · 미수집 데이터</summary><div id="provenanceContent"></div></details></section></section>
+<section id="compareView" class="hidden">
+  <section id="pairedComparison" class="panel hidden" aria-labelledby="pairedHeading">
+    <div class="panel-header"><h3 id="pairedHeading">같은 지역의 비행 비교</h3></div>
+    <p class="panel-footnote" id="pairedConditions"></p>
+    <div id="pairedTable" class="paired-table-wrap"></div>
+  </section>
+  <div id="legacyComparison" class="panel"><div class="panel-header"><div><span class="eyebrow">실행 결과 비교</span><h3>조건과 정의를 보존한 비교</h3></div><button id="compareRefresh" class="button primary">선택한 실행 비교</button></div><p class="panel-footnote">왼쪽 실행 카드의 체크박스로 비교 대상을 고릅니다. 임무 미완료 결과도 포함하며, 서로 다른 정의는 별도 그룹으로 표시합니다.</p><div class="comparison-controls"><label>지표<select id="compareMetric"></select></label><span id="compareSelectionCount">0개 실행 선택</span></div><div id="compareWarnings"></div><div id="compareContent" class="compare-content"><div class="empty-state">비교할 실행을 두 개 이상 선택하세요.</div></div></div></section>
+<section id="performanceView" class="hidden"><div class="panel"><div class="panel-header"><div><span class="eyebrow">현재 모델</span><h3>현재 모델 · V21</h3></div><button id="performanceRefresh" class="button compact">다시 읽기</button></div><p class="panel-footnote">현재 적용한 Final V1 · V21의 정보와 저장된 평가 성능입니다. 지도별 시연 수치와는 별도입니다.</p><div id="performanceContent" class="performance-content"><div class="empty-state">현재 모델 정보를 불러옵니다.</div></div></div></section><footer class="main-footer"><span>SWARM / LOCAL RESEARCH VIEWER</span><span>실시간 기체 연결 아님 · 저장 로그 분석</span></footer>
+</main></div>
+<dialog id="jobsDialog"><div class="dialog-header"><div><span class="eyebrow">RESEARCH EXECUTION</span><h2>실행 관리</h2></div><button id="jobsClose" class="icon-button" aria-label="닫기">×</button></div><p>대시보드가 시작한 작업만 관리합니다. 재생 정지는 연구 실행 중지가 아닙니다.</p><div id="jobsContent"></div></dialog>
+<div id="toast" class="toast hidden" role="status"></div><script type="module" src="/app.js"></script></body></html>

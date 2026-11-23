@@ -1,0 +1,46 @@
+.flight-radio{min-width:0;color:#234258}
+.flight-radio-heading{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:14px}
+.flight-radio-title{margin:0;font-size:15px;font-weight:750}
+.flight-radio-pair-heading{display:grid;gap:3px;min-width:0}
+.flight-radio-pair-status{font-size:14px;color:#2f5265}
+.flight-radio-pair-status[data-down="true"]{color:#a13e3a}
+.flight-radio-detour{color:#395b6a;font-size:13px}
+.flight-radio-pair-status:empty,.flight-radio-detour:empty{display:none}
+.flight-radio-select-label{display:flex;align-items:center;gap:8px;font-size:12px;color:#5c7080;white-space:nowrap}
+.flight-radio-metric{max-width:250px;min-height:36px;border:1px solid #d7e3ec;border-radius:7px;background:#fff;padding:6px 9px;color:#28485d;font-size:12px}
+.flight-radio-readings{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.flight-radio-reading{display:grid;grid-template-columns:1fr auto;gap:4px 12px;padding:13px 15px;background:#f4f8fc;border:1px solid #dbe6ef;border-left:3px solid #14609a;border-radius:8px;min-width:0}
+.flight-radio-reading[data-direction="1"]{background:#fcf8f2;border-color:#eddfcc;border-left-color:#a34d0a}
+.flight-radio-direction{font-size:13px;color:#14609a;align-self:center}
+.flight-radio-reading[data-direction="1"] .flight-radio-direction{color:#a34d0a}
+.flight-radio-value{font-size:20px;color:#18384e;text-align:right;overflow-wrap:anywhere}
+.flight-radio-reading[data-valid="false"] .flight-radio-value{font-size:13px;color:#718493}
+.flight-radio-age{font-size:12px;color:#516a7c}
+.flight-radio-measured{font-size:11px;color:#6b7f8e;text-align:right;overflow-wrap:anywhere}
+.flight-radio-message{margin:10px 0 3px;font-size:12px;color:#526e81;min-height:19px}
+.flight-radio[data-load-state="error"] .flight-radio-message{color:#a4483c}
+.flight-radio-plot{height:252px;min-width:0;width:100%;overflow:hidden}
+.flight-radio-legend{display:flex;flex-wrap:wrap;align-items:center;gap:8px 16px;margin:5px 0 9px}
+.flight-radio-legend-item{display:inline-flex;align-items:center;gap:6px;font-size:11px;color:#587286}
+.flight-radio-legend-item:before{content:"";display:block;width:16px;height:4px;background:#79b2a5}
+.flight-radio-legend-item[data-kind="down"]:before{background:#bc504a}
+.flight-radio-legend-item[data-kind="network"]:before{height:10px;background:#f7e9d8;border:1px solid #dfc6a7}
+.flight-radio-hint{font-size:11px;line-height:1.65;color:#607a8c;margin:5px 0}
+.flight-radio-details{margin-top:14px;padding-top:12px;border-top:1px solid #e1e9ef}
+.flight-radio-details>summary{font-size:12px;font-weight:650;color:#365c75;cursor:pointer}
+.flight-radio-table-wrap{overflow-x:auto;margin:10px 0}
+.flight-radio-table{width:100%;min-width:360px;border-collapse:collapse;font-size:12px}
+.flight-radio-table th,.flight-radio-table td{padding:9px 10px;border-bottom:1px solid #e7edf2;text-align:left;vertical-align:top}
+.flight-radio-table th{font-weight:600;color:#486375}
+.flight-radio-table thead{background:#f3f7fa}
+.flight-radio-table td small{display:block;margin-top:3px;color:#718696;font-size:11px}
+@media(max-width:680px){
+ .flight-radio-heading{align-items:flex-start;flex-direction:column;gap:10px}
+ .flight-radio-select-label{width:100%;justify-content:space-between}
+ .flight-radio-metric{max-width:75%}
+ .flight-radio-readings{grid-template-columns:1fr}
+ .flight-radio-value{font-size:19px}
+ .flight-radio-reading{padding:11px 12px}
+ .flight-radio-measured{font-size:10px}
+ .flight-radio-legend{gap:7px 12px}
+}
