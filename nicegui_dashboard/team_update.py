@@ -13,7 +13,7 @@ import subprocess
 import sys
 
 from result_service.dashboard_contract.validation import confined, read_json, sha256
-from .team_baseline_record import load_comparison
+from .team_baseline_record import comparison_path, load_comparison
 from .team_runtime import file_lock, map_coverage, prepare_version, research_runtime
 from .team_source import WorkerInterrupted, check_worker_exit, source_path, source_status
 
@@ -208,6 +208,23 @@ class TeamUpdates:
             batch = conn.execute("SELECT id,sha FROM batches ORDER BY id DESC LIMIT 1").fetchone()
             if not batch:
                 return None
+            pending = conn.execute("SELECT id,region,flights FROM jobs WHERE batch=? AND state='queued' AND flights IS NOT NULL",
+                                   (batch["id"],)).fetchall()
+            for item in pending:
+                # A repair can also finish while the worker is still flying another region.
+                pin = json.loads(item["flights"])["v21"]
+                bundle = self.output_root / "bundles" / pin["run_id"] / pin["revision"]
+                try:
+                    if not comparison_path(bundle).is_file():
+                        continue
+                    pair = load_comparison(bundle)
+                    if not pair or (pair["applied"]["region"], pair["applied"]["team_commit"]) != (item["region"], batch["sha"]):
+                        continue
+                except (KeyError, ValueError, TypeError, OSError):
+                    continue  # The recorder will report the validation error on its own job.
+                conn.execute("UPDATE jobs SET state='completed',phase='reused',message=?,finished_at=? "
+                             "WHERE id=? AND state='queued' AND flights=?",
+                             ("등록된 비행에 같은 조건의 비교 결과를 반영했습니다.", now(), item["id"], item["flights"]))
             items = [self._row(r) for r in conn.execute("SELECT region,state,phase,message,finished_at FROM jobs WHERE batch=? ORDER BY id", (batch["id"],))]
         counts = {k: sum(item["state"] == k for item in items) for k in ("queued","running","completed","failed","unavailable")}
         return {**dict(batch), **counts, "total": len(items), "items": items,
@@ -301,11 +318,14 @@ class TeamUpdates:
         if not self._available(flights, job["region"], job["sha"]):
             raise ValueError("비교할 기존 비행의 팀 버전 또는 지도 기록을 확인할 수 없습니다.")
         pin = flights["v21"]
+        bundle = self.output_root / "bundles" / pin["run_id"] / pin["revision"]
+        if load_comparison(bundle) is not None:
+            return
         code = prepare_version(job["source"], job["sha"], Path(job["core"]), self.state_root)
         self._run_recorder(job, ["nicegui_dashboard.team_baseline", "--output-root", str(self.output_root),
                                  "--snapshot", str(code.parent / "snapshot.json"),
                                  "--pin", pin["run_id"], pin["revision"]])
-        if load_comparison(self.output_root / "bundles" / pin["run_id"] / pin["revision"]) is None:
+        if load_comparison(bundle) is None:
             raise ValueError("비교 비행을 계산했지만 같은 조건의 결과를 찾을 수 없습니다.")
 
     def run_worker(self):

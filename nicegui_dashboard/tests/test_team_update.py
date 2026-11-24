@@ -170,12 +170,36 @@ class TeamUpdateTests(unittest.TestCase):
             mgr.start("one", self.first)
         self.assertEqual(mgr.batch()["queued"], 1)
         with (patch.object(mgr, "_run_recorder") as recorder,
-              patch("nicegui_dashboard.team_update.load_comparison", return_value={"nominal": {}, "applied": {}})):
+              patch("nicegui_dashboard.team_update.load_comparison", side_effect=[None, {"nominal": {}, "applied": {}},
+                                                                                 {"nominal": {}, "applied": {}}])):
             mgr.run_worker()
             self.assertEqual(recorder.call_args.args[1][-2:], [pin["run_id"], pin["revision"]])
             mgr.start("one", self.first)
         self.assertEqual(mgr.batch()["completed"], 1)
         self.assertEqual(mgr.current("one"), original)
+
+    def test_late_comparison_counts_without_running_another_flight(self):
+        from nicegui_dashboard.team_baseline_record import comparison_path
+        mgr = self.manager
+        mgr.start("one", self.first)
+        with patch.object(mgr, "_capture", side_effect=self.fake_record):
+            mgr.run_worker()
+        pin = mgr.current("one")["flights"]["v21"]
+        bundle = mgr.output_root / "bundles" / pin["run_id"] / pin["revision"]
+        seal_manifest(bundle, dict(json.loads((bundle / "manifest.json").read_bytes()), adapter_id="team-halfsec"))
+        with patch("nicegui_dashboard.team_update.load_comparison", return_value=None):
+            mgr.start_many(["one", "two"], self.first)
+        record = comparison_path(bundle)
+        record.parent.mkdir(parents=True)
+        record.write_text("{}")
+        measured = {"applied": {"region": "one", "team_commit": self.first}}
+        with patch("nicegui_dashboard.team_update.load_comparison", return_value=measured):
+            self.assertEqual(mgr.batch()["completed"], 1)
+            self.assertEqual(mgr.batch()["queued"], 1)
+        with patch.object(mgr, "_capture", side_effect=self.fake_record) as capture:
+            mgr.run_worker()
+        self.assertEqual(capture.call_count, 1)
+        self.assertEqual(mgr.batch()["completed"], 2)
 
     def test_demo_coverage_checks_selected_hash_and_never_overrides_a_registered_scene(self):
         core, _ = research_runtime()
