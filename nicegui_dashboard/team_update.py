@@ -301,7 +301,9 @@ class TeamUpdates:
         if not self._available(flights, job["region"], job["sha"]):
             raise ValueError("비교할 기존 비행의 팀 버전 또는 지도 기록을 확인할 수 없습니다.")
         pin = flights["v21"]
+        code = prepare_version(job["source"], job["sha"], Path(job["core"]), self.state_root)
         self._run_recorder(job, ["nicegui_dashboard.team_baseline", "--output-root", str(self.output_root),
+                                 "--snapshot", str(code.parent / "snapshot.json"),
                                  "--pin", pin["run_id"], pin["revision"]])
         if load_comparison(self.output_root / "bundles" / pin["run_id"] / pin["revision"]) is None:
             raise ValueError("비교 비행을 계산했지만 같은 조건의 결과를 찾을 수 없습니다.")

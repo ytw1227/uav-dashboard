@@ -94,7 +94,7 @@ def store_pair(bundle, applied, nominal):
     write_result(comparison_path(bundle), {**data, "payload_sha256": canonical_hash(data)})
 
 
-def recover_pair(output_root, rid, revision):
+def recover_pair(output_root, rid, revision, snapshot=None):
     from .team_forecast_backfill import compare_recordings
 
     if not re.fullmatch(r"team-[0-9a-f]{28}", rid) or not re.fullmatch(r"rev-[0-9a-f]{24}", revision):
@@ -108,8 +108,12 @@ def recover_pair(output_root, rid, revision):
         sha = manifest["team_commit"]
         if not re.fullmatch("[0-9a-f]{40}", sha):
             raise ValueError("실행 당시의 팀 코드 버전이 없습니다.")
-        snapshot = confined(root.parent / "team-update/versions", Path(sha) / "snapshot.json")
-        core = Path(read_json(snapshot)["release_root"]).resolve()
+        snapshot = Path(snapshot).resolve() if snapshot else confined(
+            root.parent / "team-update/versions", Path(sha) / "snapshot.json")
+        prepared = read_json(snapshot)
+        if prepared.get("sha") != sha:
+            raise ValueError("비교에 사용할 팀 코드와 선택한 비행의 버전이 다릅니다.")
+        core = Path(prepared["release_root"]).resolve()
         code = native_path(snapshot.parent / "code")
         applied, arrays, scene = capture(code, core, manifest["source_identity"]["spec"], sha)
         verify_applied(manifest, applied)
@@ -133,10 +137,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-root", required=True, type=Path)
     parser.add_argument("--pin", required=True, nargs=2, metavar=("RUN", "REVISION"))
+    parser.add_argument("--snapshot", type=Path, help="Prepared snapshot for this job's pinned team revision")
     args = parser.parse_args()
     for key in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
         os.environ[key] = "1"
-    print(json.dumps({"pair": recover_pair(args.output_root, *args.pin)}, ensure_ascii=False), flush=True)
+    print(json.dumps({"pair": recover_pair(args.output_root, *args.pin, snapshot=args.snapshot)}, ensure_ascii=False), flush=True)
 
 
 if __name__ == "__main__":
