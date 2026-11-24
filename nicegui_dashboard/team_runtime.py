@@ -12,7 +12,7 @@ import tempfile
 import time
 import zipfile
 
-from .team_source import source_status
+from .team_source import check_worker_exit, source_status
 
 
 def research_runtime():
@@ -126,7 +126,11 @@ def _git_bytes(source, *args):
     env = dict(os.environ, GIT_NO_LAZY_FETCH="1", GIT_TERMINAL_PROMPT="0")
     for key in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR"):
         env.pop(key, None)
-    return subprocess.check_output(["git", "-C", str(source), *args], env=env, timeout=60)
+    try:
+        return subprocess.check_output(["git", "-C", str(source), *args], env=env, timeout=60)
+    except subprocess.CalledProcessError as exc:
+        check_worker_exit(exc.returncode)
+        raise
 
 
 def _inventory(source, sha):

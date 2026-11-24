@@ -13,6 +13,7 @@ import zlib
 from .ingest import load_store, publish
 from .managed_service import SERVICE_PROJECT
 from .team_forecast_record import FLEET_FORECAST_HEAD
+from .team_model import verified_profile
 
 
 SCHEMA = """
@@ -232,7 +233,7 @@ def write_database(path, row, arrays, fleet, outages, definitions):
                 for name in ("positions","rf_frames","decisions","metrics","events","observations")}
 
 
-def publish_capture(record, arrays, scene_path, output_root):
+def publish_capture(record, arrays, scene_path, output_root, *, nominal=None):
     quota = float(os.environ.get("UAV_RESULT_MAX_GIB", 4))
     if not math.isfinite(quota) or quota <= 0:
         raise ValueError("결과 보관소의 저장 용량 한도를 확인하세요.")
@@ -250,11 +251,18 @@ def publish_capture(record, arrays, scene_path, output_root):
                     started_at=record["started_at"], controller=record["controller"])
     fingerprint = hashlib.sha256(encode(identity)).hexdigest()
     revision_inputs = [fingerprint, record["team_capture_version"], record["completed_at"]]
+    model_profile = verified_profile(record)
+    if model_profile:
+        revision_inputs.append({"team_model_profile_sha256": hashlib.sha256(encode(model_profile)).hexdigest()})
     threshold = record.get("model_threshold")
     if type(threshold) in (int, float) and math.isfinite(threshold) and 0 <= threshold <= 1:
         revision_inputs.append({"model_threshold": threshold})
     else:
         threshold = None
+    if nominal is not None:
+        revision_inputs.append(dict(comparison_schema=1, nominal_metrics=totals(nominal),
+                                    nominal_cuts=nominal["cuts"], target_cells=record["target_cells"],
+                                    shared_cells=[nominal["shared_cells"], record["shared_cells"]]))
     rid, rev = "team-" + fingerprint[:28], "rev-" + hashlib.sha256(encode(revision_inputs)).hexdigest()[:24]
     fleet = [dict(id=f"uav-{i}", role="search" if i<record["search_drones"] else "relay") for i in range(record["total_drones"])]
     defs = {}
@@ -294,8 +302,13 @@ def publish_capture(record, arrays, scene_path, output_root):
             artifacts=artifacts)
         if threshold is not None:
             manifest["model_threshold"] = threshold
+        if model_profile:
+            manifest["team_model_profile"] = model_profile
         if "fleet_onset_probability" in arrays:
             manifest["head_definitions"]["fleet_onset_probability"] = FLEET_FORECAST_HEAD
+        if nominal is not None:
+            from .team_baseline import paired_manifests
+            manifest["flight_comparison"] = paired_manifests(manifest, record, nominal)
         (bundle/"manifest.json").write_bytes(encode(manifest))
         (bundle/"READY").write_bytes(encode(dict(manifest_sha256=digest(bundle/"manifest.json"))))
         store = load_store(SERVICE_PROJECT, output_root, quota_gib=quota)

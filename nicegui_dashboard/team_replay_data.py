@@ -249,6 +249,22 @@ def register_team_replay_routes(app, output_root):
     def scene(rid: str, revision: str):
         return json_response(record(rid, revision)[2][1])
 
+    @app.get(prefix + "/comparison", include_in_schema=False)
+    def comparison(rid: str, revision: str):
+        from .team_baseline_record import load_comparison
+        root, _, (manifest, _, _) = record(rid, revision)
+        identity = dict(run_id=rid, revision=revision, team_commit=manifest["team_commit"])
+        try:
+            pair = load_comparison(root)
+        except FileNotFoundError:
+            pair = None
+        except (ValueError, OSError, KeyError, TypeError) as exc:
+            logging.getLogger(__name__).warning("Invalid paired comparison for %s/%s: %s", rid, revision, exc)
+            return json_response(dict(identity, status="error", message="두 비행의 버전과 기록을 확인할 수 없습니다."))
+        if pair is None:
+            return json_response(dict(identity, status="pending", message="같은 조건의 기본 대형 비행 기록을 기다리는 중"))
+        return json_response(dict(identity, status="ready", nominal=pair["nominal"], applied=pair["applied"]))
+
     @app.get(prefix + "/events", include_in_schema=False)
     def events(rid: str, revision: str):
         return json_response(dict(run_id=rid, revision=revision, events=record(rid, revision)[2][2]))
@@ -263,6 +279,11 @@ def register_team_replay_routes(app, output_root):
               to: float | None = None, at: float = 0.):
         root, _, (m, _, _) = record(rid, revision)
         return json_response(observations(root, m, observer, peer, start, m["simulation_end_s"] if to is None else to, at))
+
+    @app.get(prefix + "/model", include_in_schema=False)
+    def model(rid: str, revision: str):
+        from .team_model import model_for_flight
+        return json_response(model_for_flight(record(rid, revision)[2][0]))
 
     @app.get(prefix + "/incident/{event_id}", include_in_schema=False)
     def incident(rid: str, revision: str, event_id: str):

@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import math
 import os
 from pathlib import Path
 
@@ -127,10 +128,15 @@ def load_path_settings(path):
         return
     settings = json.loads(path.read_text(encoding="utf-8-sig"))
     allowed = {"UAV_SHARED_S", "UAV_SHARED_B", "UAV_DATA_ROOT", "UAV_SERVICE_PROJECT",
-               "UAV_RESEARCH_CORE", "UAV_RESEARCH_PYTHON", "UAV_TEAM_SOURCE"}
+               "UAV_RESEARCH_CORE", "UAV_RESEARCH_PYTHON", "UAV_TEAM_SOURCE", "UAV_MAX_OUTPUT_GIB"}
     if not isinstance(settings, dict) or settings.keys() - allowed:
         raise ValueError("settings.local.json contains an unrecognized path option")
     for key, value in settings.items():
+        if key == "UAV_MAX_OUTPUT_GIB":
+            if type(value) not in (float, int) or not math.isfinite(value) or value <= 0:
+                raise ValueError("UAV_MAX_OUTPUT_GIB must be a positive number")
+            os.environ.setdefault(key, str(value))
+            continue
         if not isinstance(value, str) or not value.strip():
             raise ValueError(f"settings.local.json needs a path for {key}")
         if not os.environ.get(key):
@@ -149,7 +155,7 @@ def main():
     connection.add_argument("--service-url", help="이미 실행 중인 로컬 결과 서비스의 주소")
     connection.add_argument("--data-root", type=Path,
                             help="app과 함께 실행할 서비스의 결과 폴더. 기본값은 data/results")
-    parser.add_argument("--max-output-gib", type=float, default=4.0,
+    parser.add_argument("--max-output-gib", type=float, default=os.getenv("UAV_MAX_OUTPUT_GIB", "4"),
                         help="--data-root로 여는 기존 서비스의 용량 설정(GiB)")
     parser.add_argument("--region", help="지도 ID. 생략하면 S는 상암 두 비행, B는 카탈로그를 조회합니다.")
     parser.add_argument("--port", type=int, help="대시보드 기본 포트 8092, 자료 연결 확인 기본 포트 8091")

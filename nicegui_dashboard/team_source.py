@@ -13,6 +13,15 @@ class TeamSourceError(RuntimeError):
     pass
 
 
+class WorkerInterrupted(TeamSourceError):
+    """Windows stopped or could not initialize a child process during shutdown."""
+
+
+def check_worker_exit(code):
+    if os.name == "nt" and (code & 0xffffffff) in (0xc000013a, 0xc0000142, 0xc00002fe):
+        raise WorkerInterrupted(f"Windows가 실행을 중단했습니다 (0x{code & 0xffffffff:08X}).")
+
+
 def source_path():
     default = Path(__file__).resolve().parents[2] / "team-simulator"
     return Path(os.environ.get("UAV_TEAM_SOURCE") or default).resolve()
@@ -35,8 +44,9 @@ def _git(directory, *args):
     except subprocess.TimeoutExpired as exc:
         raise TeamSourceError("Git 응답 시간이 초과됐습니다. 연결을 확인한 뒤 다시 실행하세요.") from exc
     if result.returncode:
+        check_worker_exit(result.returncode)
         detail = result.stderr.strip() or result.stdout.strip()
-        raise TeamSourceError(detail or "Git 명령이 완료되지 않았습니다.")
+        raise TeamSourceError(detail or f"Git 명령이 완료되지 않았습니다 (종료 코드 {result.returncode}).")
     return result.stdout.strip()
 
 

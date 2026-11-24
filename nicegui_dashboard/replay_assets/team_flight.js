@@ -1,5 +1,6 @@
 // Only static presentation geometry is shared between flights. Every time series is pinned.
 import {marginRecords} from './margin_data.js';
+import {sameFlightConditions} from './library.js';
 
 const pinId = /^[a-zA-Z0-9_-]+$/;
 const fields = row => ({...row, ...row?.metadata});
@@ -87,3 +88,19 @@ export function teamPair(row) {
 
 export function teamContext() { return active?.row?.run_id || null; }
 export function teamManifest() { return active?.manifest || null; }
+
+export async function readTeamComparison(manifest) {
+    const id = manifest.run_id, revision = revisionOf(manifest);
+    const result = await json(root(id, revision) + '/comparison');
+    if (result.run_id !== id || result.revision !== revision || result.team_commit !== manifest.team_commit)
+        throw new Error('비교 결과의 팀 버전 또는 비행 기록이 선택한 비행과 다릅니다.');
+    if (result.status === 'pending') return result;
+    if (result.status !== 'ready') throw new Error(result.message || '같은 조건의 비교 기록을 읽을 수 없습니다.');
+    const {nominal, applied} = result;
+    if (!nominal || !applied || nominal.mode !== 'nominal' || applied.mode !== 'v21' ||
+        applied.run_id !== id || revisionOf(applied) !== revision ||
+        nominal.team_commit !== manifest.team_commit || applied.team_commit !== manifest.team_commit ||
+        !sameFlightConditions(manifest, applied) || !sameFlightConditions(nominal, applied))
+        throw new Error('같은 팀 버전·지도·실험 조건에서 얻은 두 비행을 확인할 수 없습니다.');
+    return result;
+}

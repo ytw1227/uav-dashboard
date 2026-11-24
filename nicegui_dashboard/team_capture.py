@@ -104,11 +104,13 @@ class FlightMeasurements:
         return packet
 
 
-def capture(code, core, spec, commit, max_seconds=None):
+def capture(code, core, spec, commit, max_seconds=None, *, nominal=False):
     prepared = json.loads((code.parent / "snapshot.json").read_text(encoding="utf-8"))
     if prepared.get("sha") != commit or Path(prepared.get("release_root", "")).resolve() != core.resolve():
         raise ValueError("준비된 팀 커밋·연구 자료가 선택한 실행과 일치하지 않습니다.")
     import numpy as np
+    if nominal:
+        from .team_baseline import NominalFormation
 
     # Use the launcher shipped in the runtime to resolve its registered data.
     # The standalone UI has no torch, checkpoint or research module dependency.
@@ -180,7 +182,15 @@ def capture(code, core, spec, commit, max_seconds=None):
                 return probes.watch_sensor(super().sensors(*args))
 
             def packet(self, *args, **kwargs):
-                return probes.watch_packets(super().packet(*args, **kwargs))
+                packet = probes.watch_packets(super().packet(*args, **kwargs))
+                context_data["packets"] = packet
+                return packet
+
+        flight_type = RecordedFlight
+        if nominal:
+            class RecordedNominal(NominalFormation, RecordedFlight):
+                pass
+            flight_type = RecordedNominal
 
         # Dispatch through the team's actual default. A changed, unsupported
         # default must not silently display an older model under a new commit.
@@ -204,7 +214,7 @@ def capture(code, core, spec, commit, max_seconds=None):
         if max_seconds is not None:
             argv.extend(["--steps", str(int(max_seconds / DECISION_S))])
         started = utc()
-        with (patch.object(release, "MainFlight", RecordedFlight), patch.object(sys, "argv", argv),
+        with (patch.object(release, "MainFlight", flight_type), patch.object(sys, "argv", argv),
               patch.object(argparse.ArgumentParser, "parse_args", verify_controller),
               patch.object(release, "run", record_native_run)):
             fly.main()
@@ -228,6 +238,14 @@ def capture(code, core, spec, commit, max_seconds=None):
                        fleet_onset_probability=np.asarray(probes.onset_probabilities, dtype=np.float32),
                        packet_counters=np.asarray(probes.counters, dtype=np.int64),
                        beacon_rx=np.asarray(probes.beacons, dtype=float).reshape(-1, 5))
+        packet = context_data["packets"]
+        if not packet.finished or packet.known.shape != (row["search_drones"], packet.visible.shape[1]):
+            raise ValueError("팀 패킷 종료 정산과 수색기의 목표 셀 지식을 확인할 수 없습니다.")
+        row.update(shared_cells=int(np.all(packet.known, axis=0).sum()), target_cells=packet.known.shape[1])
+        if nominal:
+            if row["events"] or row["applied_changes"] or np.any(archive["applied_offsets"]) or np.any(OFFSETS[0]):
+                raise ValueError("기본 대형 비행에서 보정 명령 또는 적용된 보정 변위를 발견했습니다.")
+            row["controller"] = "nominal_no_relocation"
         release_meta = json.loads(release.MANIFEST.read_text(encoding="utf-8"))
         row.update(team_commit=commit, started_at=started, completed_at=completed,
                    full_mission_budget_s=MAX_MISSION, max_seconds_requested=max_seconds,
@@ -271,7 +289,9 @@ def main():
         write_result(args.result, dict(diagnostic=True, duration_s=row["duration_s"], team_commit=args.commit))
         return
     from .team_bundle import publish_capture
-    pin = publish_capture(row, arrays, scene, args.output_root.resolve())
+    from .team_baseline import capture_pair
+    baseline = capture_pair(args.code.resolve(), args.core.resolve(), row, arrays)
+    pin = publish_capture(row, arrays, scene, args.output_root.resolve(), nominal=baseline)
     write_result(args.result, dict(v21=pin, team_commit=args.commit, region=args.region))
 
 

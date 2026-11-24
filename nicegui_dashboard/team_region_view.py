@@ -1,9 +1,11 @@
 """Run the connected team source and open its immutable results on the regional page."""
 import asyncio
+import logging
 
 from nicegui import ui
 
 from .service import ServiceReader, ServiceReadError
+from .team_baseline_record import comparison_path, load_comparison
 from .team_source import source_path, source_status
 
 
@@ -41,6 +43,7 @@ class RegionalRuns:
         self.user_selection = 0
         self.batch_seen = object()
         self.cards_ready = False
+        self.comparison_files = {}
         self.busy = False
         self.polling = False
         self.generation = 0
@@ -200,11 +203,26 @@ class RegionalRuns:
 
     def read_card_metrics(self):
         records = {}
+        comparison_files = {}
         ready = True
         for region in self.labels:
             current = self.updates.current(region)
             if current and applied_pin(current):
-                records[region] = {"sha": current["sha"], "metrics": {}, "pin": applied_pin(current)}
+                pin = applied_pin(current)
+                record = records[region] = {"sha": current["sha"], "metrics": {}, "pin": pin}
+                store = getattr(self.updates, "output_root", None)
+                if store:
+                    bundle = store.joinpath("bundles", *pin)
+                    path = comparison_path(bundle)
+                    comparison_files[path] = self.comparison_stamp(path)
+                    try:
+                        pair = load_comparison(bundle)
+                        if pair:
+                            record["nominal"] = manifest_metrics(pair["nominal"])
+                            record["metrics"] = manifest_metrics(pair["applied"])
+                    except (KeyError, OSError, ValueError, TypeError) as exc:
+                        logging.getLogger(__name__).warning("Cannot use comparison for %s: %s", region, exc)
+        self.comparison_files = comparison_files
         if records:
             try:
                 runs = self.api.runs()["runs"]
@@ -217,8 +235,16 @@ class RegionalRuns:
                 if row is None:  # The result registry may still be scanning the new bundle.
                     ready = False
                     continue
-                record["metrics"] = manifest_metrics(row)
+                record["metrics"] = {**manifest_metrics(row), **record["metrics"]}
         return records, ready
+
+    @staticmethod
+    def comparison_stamp(path):
+        try:
+            st = path.stat()
+            return st.st_mtime_ns, st.st_size
+        except FileNotFoundError:
+            return None
 
     async def refresh(self):
         if not self.updates or self.polling:
@@ -241,10 +267,14 @@ class RegionalRuns:
                     self.update_button()
             batch = await asyncio.to_thread(self.updates.batch)
             changed = self.batch_seen != batch
-            previous_count = self.batch_seen.get("completed", 0) if isinstance(self.batch_seen, dict) else 0
+            previous = self.batch_seen if isinstance(self.batch_seen, dict) else {}
+            updated = batch or {}
+            publications_changed = (previous.get("id"), previous.get("completed")) != (
+                updated.get("id"), updated.get("completed"))
             if changed:
                 self.draw_batch(batch)
-            if not self.cards_ready or (changed and (batch or {}).get("completed", 0) != previous_count):
+            pairs_changed = any(self.comparison_stamp(path) != stamp for path, stamp in self.comparison_files.items())
+            if not self.cards_ready or pairs_changed or publications_changed:
                 records, self.cards_ready = await asyncio.to_thread(self.read_card_metrics)
                 self.library.show_team_results(records)
             if self.requested_display and batch and self.requested_display == (self.card.region, batch["sha"]):

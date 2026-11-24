@@ -63,9 +63,12 @@ def _controller() -> str:
                         "$('revisionBadge').textContent = m.team_commit ? '팀 코드 ' + m.team_commit.slice(0,7) : m.split")
     code = code.replace('S.manifest = manifest;', "S.manifest = manifest; if(S.tab==='performance')loadPerformance();")
     code = code.replace('const request=++performanceRequest;',
-                        'const request=++performanceRequest;if(teamContext())return teamModel(teamManifest(),selectedCatalogRun());')
+                        'const request=++performanceRequest;const model=teamManifest();'
+                        "if(model)return teamModel(model,$('performanceContent'),()=>"
+                        "request===performanceRequest&&S.tab==='performance'&&teamContext()===model.run_id&&"
+                        "revisionOf(teamManifest())===revisionOf(model),metadata(selectedCatalogRun()).mode==='nominal');")
     code = code.replace(" $('pairedComparison').classList.toggle('hidden', !pair);",
-                        " if(teamPair(row)){S.compareRequest=null;return teamComparison(teamPair(row),row);}\n"
+                        " if(teamPair(row)){S.compareRequest=null;return teamComparison(request);}\n"
                         " $('pairedComparison').classList.toggle('hidden', !pair);")
     analytic = _between(code, 'function persistentRecoveryStats(', 'async function share(')
     analytic = analytic.replace('renderRuns();', 'publishSelection();')
@@ -73,7 +76,8 @@ def _controller() -> str:
     # package's header 'shareButton' is absent from the replay surface.
     analytic = re.sub(r"\$\('shareButton'\)\.title=[^;]+;", '', analytic)
     return '\n'.join([
-        'import {teamContext,teamDescriptor,teamManifest,teamPair,setTeamFlight} from "./team_flight.js";',
+        'import {teamContext,teamDescriptor,teamManifest,teamPair,setTeamFlight,readTeamComparison} from "./team_flight.js";',
+        'import {teamModel} from "./team_model.js";',
         code[:code.index('async function api(')].replace("'./main_plotly.js'", "'./map_display.js'"),
         'const api = (url, options) => window.__PORTABLE__.api(url, options);',
         _between(code, 'function runAPI(', 'function serviceState('),
@@ -130,7 +134,7 @@ def replay_module(source: str, name: str):
         body = _controller()
     elif name == 'flight_metrics.js':
         body = _flight_metrics()
-    elif name in {'bootstrap.js', 'map_display.js', 'evaluation_read.js', 'team_flight.js', 'team_readouts.js'}:
+    elif name in {'bootstrap.js', 'map_display.js', 'evaluation_read.js', 'team_flight.js', 'team_readouts.js', 'team_model.js'}:
         body = (ASSETS / name).read_text(encoding='utf8')
     elif name == 'margin_data.js':
         body = f"export {{marginRecords, warningThresholds}} from '/part2/data/{source}/margins.js';"

@@ -59,6 +59,7 @@ class MapCard:
     flights: dict[str, Flight]
     evaluation: dict
     team_sha: str = ""
+    team_comparison: bool = False
 
     @property
     def recall(self):
@@ -149,9 +150,8 @@ def filter_cards(cards, *, mode="v21", province="", district="", search="", metr
             continue
         if metric:
             base, applied = card.ratio("nominal", metric), card.ratio("v21", metric)
-            if card.team_sha:
-                # The public team core currently produces the applied flight only.
-                # Filter on the chosen flight, but don't count a cross-version pair.
+            if card.team_sha and not card.team_comparison:
+                # While the native pair is pending, only filter the flight that is shown.
                 missing.append(card.label)
                 selected = base if mode == "nominal" else applied
                 if selected is not None and selected <= 0.95:
@@ -271,7 +271,10 @@ class LibraryView:
                 continue
             flights = dict(card.flights)
             flights["v21"] = replace(flights["v21"], metrics=record["metrics"])
-            cards.append(replace(card, flights=flights, evaluation={}, team_sha=record["sha"]))
+            paired = "nominal" in flights and "nominal" in record
+            if paired:
+                flights["nominal"] = replace(flights["nominal"], metrics=record["nominal"])
+            cards.append(replace(card, flights=flights, evaluation={}, team_sha=record["sha"], team_comparison=paired))
         if cards != self.cards:
             self.cards = cards
             self.by_flight = {flight.key: card for card in cards for flight in card.flights.values()}
@@ -332,8 +335,8 @@ class LibraryView:
                     ui.label(card.label).classes("font-bold leading-tight")
                     ui.label(f"{card.province} · {card.district}").classes("text-xs text-slate-600")
                     if card.team_sha:
-                        description = (f"팀 실행 · {card.team_sha[:7]}" if mode == "v21"
-                                       else "기본 대형 · 기존 기록")
+                        description = (f"팀 실행 · {card.team_sha[:7]}" if mode == "v21" else
+                                       f"기본 대형 비교 · {card.team_sha[:7]}" if card.team_comparison else "기본 대형 · 기존 기록")
                         ui.label(description).classes("text-xs font-semibold")
                     if card.evaluation:
                         n = card.evaluation.get("events")

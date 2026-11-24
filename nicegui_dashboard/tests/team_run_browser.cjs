@@ -16,6 +16,54 @@ async function checkTeamReplay(page) {
   assert.equal(await page.locator('canvas[aria-label^="보관 비행 지도"]:visible').count(), 0);
 }
 
+async function checkTeamComparison(page) {
+  await page.locator('button[data-uav-tab="compare"]').click();
+  const table = page.locator('#pairedTable');
+  const cell = (key,arm) => table.locator(`tr[data-metric="${key}"] td[data-arm="${arm}"]`);
+  await table.locator('tbody tr').first().waitFor();
+  assert.equal(await cell('pdr','nominal').innerText(), '—');
+  assert.equal(await cell('pdr','v21').innerText(), '75%');
+  const write = await page.request.post(new URL('/qa/complete-comparison', page.url()).href);
+  assert.equal(write.ok(), true);
+  await cell('pdr','nominal').filter({hasText:'70%'}).waitFor();
+  assert.equal(await table.locator('tbody tr').count(), 9);
+  assert.deepEqual(await table.locator('thead th').allTextContents(), ['지표','기본 대형','모델 적용','차이 (적용 − 기본)']);
+  assert.equal(await cell('pdr','delta').innerText(), '+5%p');
+  assert.equal(await cell('mean_recovery_s','nominal').innerText(), '3 s');
+  assert.equal(await cell('unrecovered_at_end','nominal').innerText(), '1건');
+  assert.equal(await cell('unrecovered_at_end','v21').innerText(), '0건');
+  assert.equal(await cell('persistent_onsets','delta').innerText(), '-1회');
+  assert.equal(await cell('persistent_cut_seconds','delta').innerText(), '-3 s');
+  assert.equal(await cell('information_shared_fraction','delta').innerText(), '0%p');
+  assert.equal(await cell('duration_s','delta').innerText(), '-3 s');
+  assert.equal(await cell('mission_completed','nominal').innerText(), '완료');
+
+  // Finish an old team response after entering the archived comparison. Neither its data nor its
+  // request status should replace the currently selected two flights.
+  const endpoint = '**/part2/team/team-synthetic-browser-flight/synthetic_revision_0001/comparison';
+  let held;
+  await page.route(endpoint, route => {held=route;});
+  await page.locator('button[data-uav-tab="map"]').click();
+  const pending = page.waitForRequest(req => req.url().endsWith('/synthetic_revision_0001/comparison'));
+  await page.locator('button[data-uav-tab="compare"]').click();
+  await pending;
+  await page.getByTestId('team-result-choice').click();
+  await page.getByRole('option', {name:'기존 대시보드 비행'}).click();
+  await page.waitForFunction(() => !window.uavReplay.snapshot().team_context);
+  await page.locator('#pairedTable tbody tr').first().waitFor();
+  const saved = await table.innerText();
+  const delivered = page.waitForResponse(resp => resp.url().endsWith('/synthetic_revision_0001/comparison'));
+  await held.fulfill({json:{status:'error',message:'늦게 도착한 팀 결과'}});
+  await delivered;
+  await page.evaluate(() => new Promise(requestAnimationFrame));
+  assert.equal(await table.innerText(), saved);
+  assert.doesNotMatch(await page.locator('#pairedConditions').innerText(), /팀 코드|늦게 도착한 팀 결과/);
+  await page.unroute(endpoint);
+  await page.getByTestId('team-result-choice').click();
+  await page.getByRole('option', {name:/팀 aaaaaaa/}).click();
+  await cell('pdr','nominal').filter({hasText:'70%'}).waitFor();
+}
+
 async function main() {
   const browser = await chromium.launch({
     ...(process.env.CHROME_PATH ? {executablePath: process.env.CHROME_PATH} : {channel: 'chrome'}),
@@ -78,13 +126,14 @@ async function main() {
                      [incident, 2, 4]);
     await page.keyboard.press('Escape');
     await page.locator('#incidentDialog[open]').waitFor({state:'hidden'});
-    await page.locator('button[data-uav-tab="compare"]').click();
-    await page.getByText(/이 팀 버전으로 실행한 기본 대형의 비행 기록이 아직 없습니다/).waitFor();
+    await checkTeamComparison(page);
     await page.locator('button[data-uav-tab="performance"]').click();
     await page.getByText('현재 비행에 사용한 모델', {exact:true}).waitFor();
     assert.match(await page.locator('#performanceContent').innerText(), /현재 비행에 사용한 모델/);
     assert.match(await page.locator('#performanceContent').innerText(), /0\.5초/);
     assert.match(await page.locator('#performanceContent').innerText(), /synthetic-halfsec-policy/);
+    assert.match(await page.locator('#performanceContent').innerText(), /제어 성능/);
+    assert.match(await page.locator('#performanceContent').innerText(), /선행 탐지 성능/);
     await page.locator('button[data-uav-tab="map"]').click();
     await page.locator('#flightNominal').click();
     await page.waitForFunction(() => {

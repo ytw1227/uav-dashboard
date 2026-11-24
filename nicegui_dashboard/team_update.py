@@ -13,8 +13,9 @@ import subprocess
 import sys
 
 from result_service.dashboard_contract.validation import confined, read_json, sha256
+from .team_baseline_record import load_comparison
 from .team_runtime import file_lock, map_coverage, prepare_version, research_runtime
-from .team_source import source_path, source_status
+from .team_source import WorkerInterrupted, check_worker_exit, source_path, source_status
 
 
 PROJECT = Path(__file__).resolve().parents[1]
@@ -139,9 +140,23 @@ class TeamUpdates:
                     continue
                 current = next(self._published(conn, region), None)
                 if current and current["sha"] == sha:
-                    conn.execute("INSERT INTO jobs(batch,region,state,phase,message,finished_at,flights) VALUES(?,?,?,?,?,?,?)",
-                                 (bid, region, "completed", "reused", "이 버전으로 등록한 기록을 사용합니다.",
-                                  current["finished_at"], json.dumps(current["flights"])))
+                    pin = current["flights"]["v21"]
+                    bundle = self.output_root / "bundles" / pin["run_id"] / pin["revision"]
+                    manifest = read_json(bundle / "manifest.json")
+                    try:
+                        needs_pair = manifest.get("adapter_id") == "team-halfsec" and load_comparison(bundle) is None
+                    except (KeyError, ValueError, TypeError, OSError) as exc:
+                        conn.execute("INSERT INTO jobs(batch,region,state,phase,message,finished_at) VALUES(?,?,?,?,?,?)",
+                                     (bid, region, "failed", "failed", f"보관된 비교 기록 확인 필요 · {exc}", now()))
+                        continue
+                    if needs_pair:
+                        conn.execute("INSERT INTO jobs(batch,region,state,phase,message,flights) VALUES(?,?,?,?,?,?)",
+                                     (bid, region, "queued", "pair_pending", "등록된 비행의 기본 대형 비교를 준비합니다.",
+                                      json.dumps(current["flights"])))
+                    else:
+                        conn.execute("INSERT INTO jobs(batch,region,state,phase,message,finished_at,flights) VALUES(?,?,?,?,?,?,?)",
+                                     (bid, region, "completed", "reused", "이 버전으로 등록한 기록을 사용합니다.",
+                                      current["finished_at"], json.dumps(current["flights"])))
                 else:
                     conn.execute("INSERT INTO jobs(batch,region,state,phase,message) VALUES(?,?,?,?,?)",
                                  (bid, region, "queued", "queued", "차례를 기다리는 중"))
@@ -247,28 +262,32 @@ class TeamUpdates:
 
     def _set(self, job_id, state, phase, message, flights=None):
         with self.connection() as conn:
-            conn.execute("UPDATE jobs SET state=?,phase=?,message=?,finished_at=?,flights=? WHERE id=?",
+            conn.execute("UPDATE jobs SET state=?,phase=?,message=?,finished_at=?,flights=COALESCE(?,flights) WHERE id=?",
                          (state, phase, message, now() if state in ("failed", "completed") else None,
                           json.dumps(flights) if flights else None, job_id))
 
-    def _capture(self, job, code):
+    def _run_recorder(self, job, arguments):
         request_dir = self.work / "attempts" / f"job-{job['id']}"
         request_dir.mkdir(parents=True, exist_ok=True)
-        result_path = request_dir / "result.json"
         log_path = request_dir / "flight.log"
-        args = [job["python"], "-B", "-m", "nicegui_dashboard.team_runtime_child", "--core", job["core"],
-                "--code", str(code), "--region", job["region"], "--commit", job["sha"],
-                "--output-root", str(self.output_root), "--result", str(result_path)]
         with log_path.open("ab") as out:
-            result = subprocess.run(args, cwd=PROJECT, stdout=out, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+            result = subprocess.run([job["python"], "-B", "-m", *arguments], cwd=PROJECT,
+                                    stdout=out, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
                                     env=dict(os.environ, PYTHONUTF8="1", PYTHONDONTWRITEBYTECODE="1", UAV_RESULT_MAX_GIB=str(job["quota_gib"]),
                                              OMP_NUM_THREADS="1", OPENBLAS_NUM_THREADS="1", MKL_NUM_THREADS="1"))
         if result.returncode:
+            check_worker_exit(result.returncode)
             with log_path.open("rb") as log:
                 log.seek(max(0, log.seek(0, os.SEEK_END) - 3000))
                 lines = log.read().decode("utf-8", errors="replace").strip().splitlines()
             detail = lines[-1][-400:] if lines else f"종료 코드 {result.returncode}"
             raise RuntimeError(f"{detail} (실행 기록 {log_path.name}, 작업 {request_dir.name})")
+
+    def _capture(self, job, code):
+        result_path = self.work / "attempts" / f"job-{job['id']}" / "result.json"
+        self._run_recorder(job, ["nicegui_dashboard.team_runtime_child", "--core", job["core"],
+                                 "--code", str(code), "--region", job["region"], "--commit", job["sha"],
+                                 "--output-root", str(self.output_root), "--result", str(result_path)])
         raw = json.loads(result_path.read_text(encoding="utf-8"))
         if raw.get("team_commit") != job["sha"] or raw.get("region") != job["region"]:
             raise ValueError("결과의 지도 또는 팀 코드 버전이 선택한 실행과 일치하지 않습니다.")
@@ -276,6 +295,16 @@ class TeamUpdates:
         if not self._available(flights, job["region"], job["sha"]):
             raise ValueError("완료 결과의 실행 식별자 또는 READY 표시를 확인하지 못했습니다.")
         return flights
+
+    def _complete_comparison(self, job):
+        flights = json.loads(job["flights"])
+        if not self._available(flights, job["region"], job["sha"]):
+            raise ValueError("비교할 기존 비행의 팀 버전 또는 지도 기록을 확인할 수 없습니다.")
+        pin = flights["v21"]
+        self._run_recorder(job, ["nicegui_dashboard.team_baseline", "--output-root", str(self.output_root),
+                                 "--pin", pin["run_id"], pin["revision"]])
+        if load_comparison(self.output_root / "bundles" / pin["run_id"] / pin["revision"]) is None:
+            raise ValueError("비교 비행을 계산했지만 같은 조건의 결과를 찾을 수 없습니다.")
 
     def run_worker(self):
         with file_lock(self.work / "worker.lock", wait=True):
@@ -287,17 +316,25 @@ class TeamUpdates:
             while True:
                 with self.connection() as conn:
                     conn.execute("BEGIN IMMEDIATE")
-                    job = conn.execute("""SELECT jobs.id,region,sha,source,core,python,quota_gib FROM jobs JOIN batches b ON b.id=batch
+                    job = conn.execute("""SELECT jobs.id,region,sha,source,core,python,quota_gib,flights FROM jobs JOIN batches b ON b.id=batch
                                           WHERE state='queued' ORDER BY jobs.id LIMIT 1""").fetchone()
                     if not job:
                         return
                     conn.execute("UPDATE jobs SET state='running',phase='preparing',message=? WHERE id=?",
                                  ("선택한 팀 버전과 연구 자료 준비 중", job["id"]))
                 try:
+                    if job["flights"]:
+                        self._set(job["id"], "running", "pairing", "등록된 비행과 같은 조건의 기본 대형을 계산하는 중")
+                        self._complete_comparison(job)
+                        self._set(job["id"], "completed", "reused", "기존 팀 비행에 같은 버전의 비교 결과를 반영했습니다.")
+                        continue
                     code = prepare_version(job["source"], job["sha"], Path(job["core"]), self.state_root)
                     self._set(job["id"], "running", "simulating", "팀 시뮬레이터 실행 및 결과 검증 중")
                     flights = self._capture(job, code)
                     self._set(job["id"], "completed", "published", "검증한 비행을 지역 카드에 반영했습니다.", flights)
+                except WorkerInterrupted:
+                    self._set(job["id"], "queued", "queued", "PC에서 실행이 중단됐습니다. 대시보드를 다시 열면 이어갑니다.")
+                    return
                 except Exception as exc:
                     self._set(job["id"], "failed", "failed", str(exc)[:700])
 

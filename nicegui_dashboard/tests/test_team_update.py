@@ -145,6 +145,38 @@ class TeamUpdateTests(unittest.TestCase):
         self.assertEqual(source_status(self.checkout)["commit"], second)
         self.assertEqual(git(self.checkout, "status", "--porcelain"), "")
 
+    def test_interrupted_worker_leaves_current_and_later_regions_in_queue(self):
+        mgr = self.manager
+        mgr.start_many(["one", "two"], self.first)
+        with patch.object(mgr, "_capture", side_effect=team_source.WorkerInterrupted()):
+            mgr.run_worker()
+        self.assertEqual(mgr.batch()["queued"], 2)
+        self.assertEqual(mgr.batch()["failed"], 0)
+        with patch.object(mgr, "_capture", side_effect=self.fake_record):
+            mgr.run_worker()
+        self.assertEqual(mgr.batch()["completed"], 2)
+
+    def test_existing_flight_adds_missing_pair_without_replacing_original(self):
+        mgr = self.manager
+        mgr.start("one", self.first)
+        with patch.object(mgr, "_capture", side_effect=self.fake_record):
+            mgr.run_worker()
+        original = mgr.current("one")
+        pin = original["flights"]["v21"]
+        bundle = mgr.output_root / "bundles" / pin["run_id"] / pin["revision"]
+        manifest = json.loads((bundle / "manifest.json").read_bytes())
+        seal_manifest(bundle, dict(manifest, adapter_id="team-halfsec"))
+        with patch("nicegui_dashboard.team_update.load_comparison", return_value=None):
+            mgr.start("one", self.first)
+        self.assertEqual(mgr.batch()["queued"], 1)
+        with (patch.object(mgr, "_run_recorder") as recorder,
+              patch("nicegui_dashboard.team_update.load_comparison", return_value={"nominal": {}, "applied": {}})):
+            mgr.run_worker()
+            self.assertEqual(recorder.call_args.args[1][-2:], [pin["run_id"], pin["revision"]])
+            mgr.start("one", self.first)
+        self.assertEqual(mgr.batch()["completed"], 1)
+        self.assertEqual(mgr.current("one"), original)
+
     def test_demo_coverage_checks_selected_hash_and_never_overrides_a_registered_scene(self):
         core, _ = research_runtime()
         with patch("nicegui_dashboard.team_demo.demo_survey_supported", return_value=True):

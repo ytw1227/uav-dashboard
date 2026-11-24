@@ -4,6 +4,7 @@ let mountedSource;
 let published = '';
 let publishTimer;
 let selectionTicket = 0;
+let comparisonTimer;
 const surface = document.querySelector('.uav-replay');
 const retryRead = document.createElement('button');
 retryRead.type = 'button';
@@ -110,6 +111,7 @@ export async function initialize(source, preferredRun, preferredRevision, deferI
     window.addEventListener('pagehide', () => {
         S.playing = false;
         clearTimeout(publishTimer);
+        clearTimeout(comparisonTimer);
         classes.disconnect();
         incidentReplay.reset();
     }, {once: true});
@@ -136,6 +138,13 @@ async function openTeam(region, id, revision, sha, mode, ticket, restart) {
     selectionTicket = ticket;
     surface.setAttribute('aria-busy', 'true');
     surface.dataset.loadState = 'loading';
+    if (teamContext() !== id || revisionOf(teamManifest()) !== revision) {
+        clearTimeout(comparisonTimer);
+        S.pairCompareRequest = (S.pairCompareRequest || 0) + 1;
+        ++performanceRequest;
+        if (S.tab === 'compare') $('pairedTable').textContent = '선택한 비행의 비교 결과를 읽는 중…';
+        if (S.tab === 'performance') $('performanceContent').textContent = '선택한 비행의 모델 정보를 읽는 중…';
+    }
     let record;
     try {
         record = await teamDescriptor(region, id, revision, sha);
@@ -149,11 +158,11 @@ async function openTeam(region, id, revision, sha, mode, ticket, restart) {
     if (selectionTicket !== ticket) return clientState();
     const row = mode === 'nominal' ? record.nominal : record.row;
     if (!row) throw new Error('이 지역에 저장된 기본 대형 비행이 없습니다.');
-    const oldContext = teamContext();
+    const sameEdition = teamContext() === id && revisionOf(teamManifest()) === revision;
     S.runs = setTeamFlight(record);
     surface.dataset.teamResult = id;
     // Even the same nominal pin needs new comparison/model-tab state when its context changes.
-    await chooseRun(row.run_id, revisionOf(row), !restart && oldContext === id);
+    await chooseRun(row.run_id, revisionOf(row), !restart && sameEdition);
     if (selectionTicket === ticket) {
         surface.removeAttribute('aria-busy');
         publishSelection();
@@ -162,21 +171,40 @@ async function openTeam(region, id, revision, sha, mode, ticket, restart) {
     return clientState();
 }
 
-function teamComparison(pair, row) {
+async function teamComparison(request) {
+    clearTimeout(comparisonTimer);
+    const manifest = teamManifest();
+    const current = () => request === S.pairCompareRequest && S.tab === 'compare' &&
+        teamContext() === manifest.run_id && revisionOf(teamManifest()) === revisionOf(manifest);
     $('pairedComparison').classList.remove('hidden');
     $('legacyComparison').classList.add('hidden');
-    $('pairedHeading').textContent = mapName(row) + ' · 비행 비교';
-    $('pairedConditions').textContent = '새 팀 코드 ' + pair.v21.team_commit.slice(0,7);
-    $('pairedTable').innerHTML = '<p class="empty-state">이 팀 버전으로 실행한 기본 대형의 비행 기록이 아직 없습니다. 기존 기본 대형은 지도에서 따로 재생할 수 있습니다.</p>';
-}
-
-function teamModel(manifest, row) {
-    if (metadata(row).mode === 'nominal') {
-        $('performanceContent').innerHTML = '<h3>기존 기본 대형 비행</h3><p>이 기록에서는 예측·재배치 모델을 적용하지 않았습니다.</p>';
-        return;
+    $('pairedHeading').textContent = mapName(manifest) + ' · 같은 조건의 비행 비교';
+    const interference = {continuous:'지속 간섭', intermittent:'간헐 간섭', clear:'간섭 없음'}[manifest.kind] || manifest.kind;
+    const placement = {east_west:'동서 배치', north_south:'남북 배치'}[manifest.direction] || manifest.direction;
+    const conditions = `같은 지도 · ${interference} · ${placement} · seed ${manifest.seed} · 팀 코드 ${manifest.team_commit.slice(0,7)}`;
+    const modeNote = metadata(selectedCatalogRun()).mode === 'nominal'
+        ? ' · 지도에서 재생한 기본 대형은 이전 기록입니다. 이 표는 선택한 팀 버전으로 실행한 두 비행을 비교합니다.' : '';
+    $('pairedConditions').textContent = conditions;
+    $('pairedTable').textContent = '두 비행 결과를 읽는 중…';
+    async function refresh() {
+        if (!current()) return;
+        try {
+            const data = await readTeamComparison(manifest);
+            if (!current()) return;
+            if (data.status === 'ready') {
+                $('pairedConditions').textContent = conditions + ' · 각 방식 1회' + modeNote;
+                $('pairedTable').innerHTML = pairedTable(data.nominal, data.applied);
+            } else {
+                $('pairedConditions').textContent = conditions + ' · ' + (data.message || '기본 대형 비교 결과 대기 중') + modeNote;
+                $('pairedTable').innerHTML = pairedTable({}, manifest);
+                comparisonTimer = setTimeout(refresh, 5000);
+            }
+        } catch (error) {
+            if (current()) {
+                $('pairedConditions').textContent = conditions + ' · ' + error.message + modeNote;
+                $('pairedTable').innerHTML = pairedTable({}, manifest);
+            }
+        }
     }
-    const rows = [['제어기', manifest.controller || manifest.model_id], ['팀 코드', manifest.team_commit],
-        ['판단 주기', manifest.decision_interval_s + '초'], ['모델 파일 SHA-256', manifest.model_sha256]];
-    $('performanceContent').innerHTML = '<h3>현재 비행에 사용한 모델</h3>' +
-        rows.map(([label,value]) => kv(label,value ?? '미기록')).join('');
+    await refresh();
 }

@@ -173,6 +173,30 @@ def main():
             checkout["assets"] = True
             return checkout
 
+        @app.post("/qa/complete-comparison")
+        def complete_comparison():
+            from result_service.dashboard_contract.validation import canonical_hash
+            from nicegui_dashboard.team_baseline_record import comparison_path, pin_fields
+            from nicegui_dashboard.team_capture import write_result
+
+            rid, rev = manifest["run_id"], manifest["bundle_revision"]
+            bundle = store / "bundles" / rid / rev
+            units = dict(search_connected_mean="ratio", pdr="ratio", persistent_cut_seconds="s",
+                         persistent_onsets="count", information_shared_fraction="ratio")
+            definitions = {k: dict(unit=v, definition_hash="test-definition-" + k) for k, v in units.items()}
+            applied = dict(manifest, mode="v21", pair_key=f"{rid}/{rev}", metric_definitions=definitions,
+                           raw_metadata={"persistent_cut_intervals": [[2, 4]]},
+                           final_metrics=dict(manifest["final_metrics"], search_connected_mean=5/6,
+                                              information_shared_fraction=.99))
+            nominal = dict(applied, mode="nominal", run_id="nominal-synthetic-browser-flight",
+                           controller="nominal_no_relocation", simulation_end_s=15,
+                           raw_metadata={"persistent_cut_intervals": [[0, 1], [3, 6], [14, 15]]},
+                           final_metrics=dict(applied["final_metrics"], pdr=.70, persistent_onsets=2,
+                                              persistent_cut_seconds=5., search_connected_mean=2/3))
+            record = dict(pin_fields(bundle, manifest), nominal=nominal, applied=applied)
+            write_result(comparison_path(bundle), dict(record, payload_sha256=canonical_hash(record)))
+            return {"completed": True}
+
         def current_source(_):
             return {"commit":checkout["commit"]}
 

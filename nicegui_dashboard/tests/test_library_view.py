@@ -98,6 +98,18 @@ class LibraryParity(unittest.TestCase):
         self.assertEqual(result.valid, 0)
         self.assertIsNone(updated.recall)
 
+    def test_team_comparison_filters_use_measured_baseline(self):
+        card = self.s[0]
+        flights = {mode: replace(flight, metrics={"pdr": .90 if mode == "nominal" else .98})
+                   for mode, flight in card.flights.items()}
+        updated = replace(card, flights=flights, team_sha="a" * 40, team_comparison=True)
+        base = filter_cards([updated], mode="nominal", metric="pdr")
+        applied = filter_cards([updated], mode="v21", metric="pdr")
+        self.assertEqual(base.visible, [updated])
+        self.assertEqual(applied.visible, [])
+        self.assertEqual(applied.counts, {"nominal": 1, "v21": 0})
+        self.assertEqual(applied.above, [updated.label])
+
 
 if __name__ == "__main__":
     unittest.main()
