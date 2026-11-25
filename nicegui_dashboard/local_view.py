@@ -35,6 +35,16 @@ def install_assets():
 class Operations(ServiceOperations):
     """Only predefined operations are callable. Original service validates them."""
 
+    def __init__(self, base_url="http://127.0.0.1:8765", timeout=30, *, read_only=False):
+        super().__init__(base_url, timeout)
+        self.read_only = bool(read_only)
+
+    def _request(self, method, path, payload=None):
+        # Comparing stored runs is a read operation despite using a POST body.
+        if self.read_only and not (method == "GET" or (method == "POST" and path == "compare")):
+            raise ServiceReadError("read_only", "공유 대시보드는 조회 전용입니다.", 403)
+        return super()._request(method, path, payload)
+
     def compare(self, pins, metric):
         keys = [metric, "ctr"] if metric == "search_connected_mean" else [metric]
         result = self._request("POST", "compare", {"runs": [{"run_id": r, "revision": v} for r, v in pins],
@@ -196,10 +206,11 @@ def value_text(value, unit=""):
 class Console:
     """A single connected client's independent selections and pending reads."""
 
-    def __init__(self, base, data_root=None):
+    def __init__(self, base, data_root=None, *, read_only=False):
         self.base = base.rstrip("/")
         self.data_root = data_root
-        self.api = Operations(self.base)
+        self.read_only = bool(read_only)
+        self.api = Operations(self.base, read_only=self.read_only)
         self.names = geography()
         self.rows = []
         self.versions = {}
@@ -236,28 +247,31 @@ class Console:
         self.follow_candidates = []
 
     def render(self):
-        ui.label("로컬 결과 보관소").classes("text-h5 text-weight-bold")
+        ui.label("공유 결과 보관소" if self.read_only else "로컬 결과 보관소").classes("text-h5 text-weight-bold")
         with ui.row().classes("items-center"):
             self.status = ui.label("기존 서비스에 연결하는 중")
             ui.button("연결 다시 확인", on_click=self.refresh).props("outline")
-            self.rescan_button = ui.button("완료 결과 재검색", on_click=self.rescan).props("outline")
-            self.rescan_button.disable()
-            ui.link("기존 서비스 화면", self.base + "/", new_tab=True)
+            self.rescan_button = None
+            if not self.read_only:
+                self.rescan_button = ui.button("완료 결과 재검색", on_click=self.rescan).props("outline")
+                self.rescan_button.disable()
+                ui.link("기존 서비스 화면", self.base + "/", new_tab=True)
         self.notice = ui.row().classes("items-center").props("data-testid=local-notice")
         self.load_status = ui.label().props('role=status')
         with ui.expansion("등록 상태").classes("w-full").props("data-testid=local-registry-details") as self.registry_info:
             self.registry_values = ui.label().classes("text-caption whitespace-pre-wrap break-all font-mono")
-        with ui.expansion("서비스 실행 안내").classes("w-full"):
-            if self.data_root is None:
-                ui.label("설정한 주소에서 결과 서비스를 실행한 뒤 연결을 다시 확인하세요.")
-            else:
-                ui.label(f"NiceGUI와 함께 실행한 결과 서비스 · 결과 폴더 {self.data_root}")
-            ui.label(f"서비스 주소  {self.base}")
+        if not self.read_only:
+            with ui.expansion("서비스 실행 안내").classes("w-full"):
+                if self.data_root is None:
+                    ui.label("설정한 주소에서 결과 서비스를 실행한 뒤 연결을 다시 확인하세요.")
+                else:
+                    ui.label(f"NiceGUI와 함께 실행한 결과 서비스 · 결과 폴더 {self.data_root}")
+                ui.label(f"서비스 주소  {self.base}")
         with ui.tabs().classes("w-full justify-start") as tabs:
             archive = ui.tab("archive", label="보관 비행")
             compare = ui.tab("compare", label="다중 비교")
             summaries = ui.tab("summaries", label="상위 집계·모델")
-            jobs = ui.tab("jobs", label="작업 관리")
+            jobs = ui.tab("jobs", label="작업 기록" if self.read_only else "작업 관리")
         tabs.on_value_change(lambda event: self.protect("운영 자료 확인") if event.value != "archive" else None)
         with ui.tab_panels(tabs, value=archive).classes("w-full"):
             with ui.tab_panel(archive):
@@ -308,7 +322,8 @@ class Console:
             rows = result["runs"]
             changed = result.get("generation") != self.catalog_signature or not self.connected
             self.connected = True
-            self.rescan_button.enable()
+            if self.rescan_button is not None:
+                self.rescan_button.enable()
             self.status.set_text(f"서비스 연결됨 · 등록 자료 {len(rows)}건 · 세대 {result.get('generation', '미기록')}")
             registry_label = "완료 결과 검색 중" if status.get("scanning") else "등록 상태"
             self.registry_info.set_text(registry_label + f" · 확인 필요 {len(status.get('errors', []))}건")
@@ -339,7 +354,8 @@ class Console:
                 await self.open_run(self.available[0], automatic=True)
         except (ServiceReadError, OSError, ValueError) as error:
             self.connected = False
-            self.rescan_button.disable()
+            if self.rescan_button is not None:
+                self.rescan_button.disable()
             self.status.set_text(f"서비스 연결 대기 · {show_error(error)}")
             self.jobs_result = {}
             self.render_jobs()
@@ -347,6 +363,8 @@ class Console:
             self.polling = False
 
     async def rescan(self):
+        if self.read_only:
+            return
         try:
             await asyncio.to_thread(self.api.rescan)
             ui.notify("기존 서비스에 재검색을 요청했습니다.")
@@ -658,26 +676,32 @@ class Console:
         self.jobs.clear()
         with self.jobs:
             caps = self.jobs_result.get("capabilities", {})
-            enabled = bool(self.connected and caps.get("enabled"))
-            ui.label("서비스에 연결하면 작업 상태를 확인할 수 있습니다." if not self.connected else
+            enabled = bool(not self.read_only and self.connected and caps.get("enabled"))
+            ui.label("공유된 작업 기록을 확인합니다." if self.read_only else
+                     "서비스에 연결하면 작업 상태를 확인할 수 있습니다." if not self.connected else
                      "허용된 연구 작업을 관리합니다." if enabled else "연구 작업 제어 꺼짐 · 저장 결과 조회·재생 가능")
-            ui.label("연구 작업과 지도 재생은 별도로 제어합니다.")
+            if not self.read_only:
+                ui.label("연구 작업과 지도 재생은 별도로 제어합니다.")
             if not caps:
                 return
             commands = {key: {"verify": "저장 추론 경로 검증", "doctor": "연구 환경 점검", "evaluate": "체크포인트 1사례 평가"}[key]
                         for key in caps.get("commands", []) if key in ("verify", "doctor", "evaluate")}
-            with ui.row().classes("items-center"):
-                command = ui.select(commands, value=next(iter(commands), None), label="작업").classes("min-w-48")
-                checkpoint = ui.input("기존 checkpoint 상대 경로")
-                button = ui.button("연구 작업 시작", on_click=lambda: self.job_dialog(command.value, checkpoint.value))
-                button.set_enabled(enabled and bool(commands))
+            if not self.read_only:
+                with ui.row().classes("items-center"):
+                    command = ui.select(commands, value=next(iter(commands), None), label="작업").classes("min-w-48")
+                    checkpoint = ui.input("기존 checkpoint 상대 경로")
+                    button = ui.button("연구 작업 시작", on_click=lambda: self.job_dialog(command.value, checkpoint.value))
+                    button.set_enabled(enabled and bool(commands))
             for job in self.jobs_result.get("jobs", []):
                 with ui.expansion(f"{job.get('command', '')} · {job.get('status', '')} · {job['job_id']}").classes("w-full"):
                     dump(job)
-                    ui.button("이 작업 중지", on_click=lambda j=job: self.job_dialog(None, job_id=j["job_id"])).set_enabled(
-                        enabled and job.get("status") in ("running", "starting"))
+                    if not self.read_only:
+                        ui.button("이 작업 중지", on_click=lambda j=job: self.job_dialog(None, job_id=j["job_id"])).set_enabled(
+                            enabled and job.get("status") in ("running", "starting"))
 
     async def job_dialog(self, command, checkpoint=None, job_id=None):
+        if self.read_only:
+            return
         with ui.dialog() as dialog, ui.card():
             ui.label(f"연구 작업 {job_id or command}을 {'중지' if job_id else '시작'}할까요?")
             with ui.row():
@@ -783,14 +807,15 @@ class Console:
                 self.chart.on("local-seek", self.chart_seek, args=["detail"])
                 self.chart_note = ui.label().classes("text-caption")
                 self.report = ui.column().classes("w-full")
-                with ui.expansion("선택 구간 내보내기 · 실행 번들").classes("w-full"):
-                    ui.label("스냅샷에는 선택 시각·기체·사건과 최대 240초의 저장 구간이 포함됩니다.")
-                    with ui.row():
-                        ui.button("구간 스냅샷 HTML", on_click=lambda: self.export("snapshot")).props("outline")
-                        ui.button("실행 번들 ZIP", on_click=lambda: self.export("bundle")).props("outline")
-                    self.download = ui.column()
-                    ui.label(f"기존 번들 가져오기 · {SERVICE_PROJECT} 폴더에서 실행")
-                    ui.code("python -m dashboard_service.import_results <ZIP> --output-root <결과 폴더>")
+                if not self.read_only:
+                    with ui.expansion("선택 구간 내보내기 · 실행 번들").classes("w-full"):
+                        ui.label("스냅샷에는 선택 시각·기체·사건과 최대 240초의 저장 구간이 포함됩니다.")
+                        with ui.row():
+                            ui.button("구간 스냅샷 HTML", on_click=lambda: self.export("snapshot")).props("outline")
+                            ui.button("실행 번들 ZIP", on_click=lambda: self.export("bundle")).props("outline")
+                        self.download = ui.column()
+                        ui.label(f"기존 번들 가져오기 · {SERVICE_PROJECT} 폴더에서 실행")
+                        ui.code("python -m dashboard_service.import_results <ZIP> --output-root <결과 폴더>")
                 with ui.expansion("기록 시계 · 지표 정의 · 가용 기능").classes("w-full"):
                     dump({k: manifest.get(k) for k in ("clocks", "capabilities", "final_metrics", "metric_definitions")})
             if hasattr(self, "metric"):  # The archive comparison tab owns this selector.
@@ -975,6 +1000,8 @@ class Console:
             await self.query()
 
     async def export(self, kind):
+        if self.read_only:
+            return
         if not self.last_query or not self.pin:
             ui.notify("먼저 유효한 시각 구간을 조회하세요.")
             return
@@ -1011,8 +1038,8 @@ class Console:
                 ui.notify(show_error(error), type="negative")
 
 
-def render_local(base_url="http://127.0.0.1:8765", data_root=None):
+def render_local(base_url="http://127.0.0.1:8765", data_root=None, *, read_only=False):
     install_assets()
-    view = Console(base_url, data_root=data_root)
+    view = Console(base_url, data_root=data_root, read_only=read_only)
     view.render()
     return view

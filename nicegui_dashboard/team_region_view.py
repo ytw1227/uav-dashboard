@@ -67,7 +67,8 @@ def native_card_record(store, record):
 
 
 class RegionalRuns:
-    def __init__(self, updates, library, service_url, code_updates):
+    def __init__(self, updates, library, service_url, code_updates, *, read_only=False):
+        self.read_only = bool(read_only)
         self.updates = updates
         self.code_updates = code_updates
         self.coverage = None
@@ -94,32 +95,36 @@ class RegionalRuns:
         self.display_choice = None
         self.recorded_source = None
         self.job_error = ""
+        self.scope = self.start = self.cancel = self.retry = None
 
     def render(self):
         with ui.column().classes("w-full gap-2 rounded-lg bg-white p-3").style(
                 "border:1px solid #d0dce2").props("data-testid=team-region-actions"):
             with ui.row().classes("items-center gap-3"):
-                self.scope = ui.select({"selected": "선택 지역", "all": f"전체 {len(self.labels)}개 지역"},
-                                       label="실행 범위", value="selected", on_change=self.update_button).props(
-                    "dense outlined options-dense data-testid=team-run-scope").classes("min-w-32")
-                self.start = ui.button("선택 지역 실행", on_click=self.start_run).props("no-caps data-testid=team-run-start")
-                self.cancel = ui.button("현재 갱신 중단", on_click=self.cancel_batch).props(
-                    "outline no-caps data-testid=team-run-cancel")
-                self.cancel.set_visibility(False)
-                self.retry = ui.button("실패 지역만 재시도", on_click=self.retry_failed).props(
-                    "outline no-caps data-testid=team-run-retry")
-                self.retry.set_visibility(False)
+                if not self.read_only:
+                    self.scope = ui.select({"selected": "선택 지역", "all": f"전체 {len(self.labels)}개 지역"},
+                                           label="실행 범위", value="selected", on_change=self.update_button).props(
+                        "dense outlined options-dense data-testid=team-run-scope").classes("min-w-32")
+                    self.start = ui.button("선택 지역 실행", on_click=self.start_run).props("no-caps data-testid=team-run-start")
+                    self.cancel = ui.button("현재 갱신 중단", on_click=self.cancel_batch).props(
+                        "outline no-caps data-testid=team-run-cancel")
+                    self.cancel.set_visibility(False)
+                    self.retry = ui.button("실패 지역만 재시도", on_click=self.retry_failed).props(
+                        "outline no-caps data-testid=team-run-retry")
+                    self.retry.set_visibility(False)
                 self.versions = ui.select({}, label="표시할 비행 기록", on_change=self.choose_version).props(
                     "outlined dense options-dense data-testid=team-result-choice").classes("min-w-64")
                 self.versions.set_visibility(False)
             self.source_note = ui.label().classes("text-sm").style("color:#32566b").props("data-testid=team-result-source")
-            with ui.expansion("실행 관리").props("dense data-testid=team-run-details").classes("w-full"):
+            with ui.expansion("실행 기록" if self.read_only else "실행 관리").props("dense data-testid=team-run-details").classes("w-full"):
                 self.eligible_note = ui.label().props("data-testid=team-run-eligibility").classes("text-sm")
                 self.message = ui.label().props("role=status aria-live=polite data-testid=team-run-status").classes("text-sm")
                 self.job_items = ui.column().classes("w-full gap-1")
         if self.updates is None:
-            self.message.set_text("새 비행을 저장하려면 결과 폴더를 연결해 대시보드를 실행하세요.")
-            self.start.disable()
+            self.message.set_text("공유된 기존 비행을 조회할 수 있습니다." if self.read_only else
+                                  "새 비행을 저장하려면 결과 폴더를 연결해 대시보드를 실행하세요.")
+            if self.start is not None:
+                self.start.disable()
 
     def attach(self, archive, replay):
         self.archive, self.replay = archive, replay
@@ -147,6 +152,9 @@ class RegionalRuns:
         return next((key for key, flight in self.card.flights.items() if flight.key == self.selection), None) if self.card else None
 
     def update_button(self):
+        if self.read_only:
+            self.eligible_note.set_text("공유된 비행 기록을 선택해 조회할 수 있습니다.")
+            return
         label = f"전체 {len(self.labels)}개 지역" if self.scope.value == "all" else (self.card.label if self.card else "선택 지역")
         self.start.set_text(f"{label} 새 비행 실행")
         batch = self.batch_seen if isinstance(self.batch_seen, dict) else {}
@@ -175,6 +183,8 @@ class RegionalRuns:
                                 and not batch.get("cancelling"))
 
     async def cancel_batch(self):
+        if getattr(self, "read_only", False):
+            return
         batch = self.batch_seen if isinstance(self.batch_seen, dict) else {}
         if self.busy or not self.updates or not batch.get("active") or batch.get("cancelling"):
             return
@@ -195,6 +205,8 @@ class RegionalRuns:
             await self.refresh()
 
     async def start_run(self):
+        if getattr(self, "read_only", False):
+            return
         if (self.busy or not self.updates or not self.card or self.code_updates.syncing
                 or self.coverage is None or self.coverage_sha != self.code_updates.commit
                 or self.coverage_generation != self.code_updates.generation):
@@ -227,6 +239,8 @@ class RegionalRuns:
             await self.refresh()
 
     async def retry_failed(self):
+        if getattr(self, "read_only", False):
+            return
         if self.busy or not self.updates or self.code_updates.syncing or self.coverage is None:
             return
         self.busy = True
@@ -254,7 +268,8 @@ class RegionalRuns:
     def draw_batch(self, batch):
         self.batch_seen = batch
         self.update_button()
-        self.retry.set_visibility(bool(failed_presentation_regions(batch, self.labels)) and not batch.get("active"))
+        if self.retry is not None:
+            self.retry.set_visibility(bool(failed_presentation_regions(batch, self.labels)) and not batch.get("active"))
         self.job_items.clear()
         message = ""
         shown = presentation_batch_status(batch, self.labels)
@@ -309,7 +324,7 @@ class RegionalRuns:
         try:
             sha = self.code_updates.commit
             generation = self.code_updates.generation
-            if sha and not self.code_updates.syncing and self.coverage_generation != generation:
+            if not self.read_only and sha and not self.code_updates.syncing and self.coverage_generation != generation:
                 try:
                     coverage = await asyncio.to_thread(self.updates.coverage, sha, refresh=True)
                     coverage_error = ""

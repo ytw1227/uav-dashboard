@@ -48,11 +48,14 @@ def presentation_catalog(catalog: dict, source: str) -> dict:
     run_ids = {rid for pair in pairs.values() for rid in pair.values()}
     if run_ids - set(catalog["entries"]):
         raise ValueError("표시할 지역의 기본·적용 비행 연결이 올바르지 않습니다.")
+    previous_selection = scope.get("dashboard_selection") or {}
     visible_scope = {**scope, "maps": regions, "flight_pairs": pairs,
-                     "dashboard_selection": {"selection_id": selection["selection_id"],
+                     "dashboard_selection": {**previous_selection,
+                                             "selection_id": selection["selection_id"],
                                              "available_maps": len(scope["maps"]),
                                              "selected_maps": len(regions),
-                                             "original_recordings_preserved": True}}
+                                             "original_recordings_preserved": previous_selection.get(
+                                                 "original_recordings_preserved", True)}}
     for key in ("incident_replay", "forecast_evaluation"):
         if key in scope:
             detail = scope[key]

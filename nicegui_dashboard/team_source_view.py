@@ -9,7 +9,8 @@ from .team_source import TeamSourceError, source_path, source_status, sync_sourc
 class TeamCodeUpdates:
     """Concurrent clicks from different web tabs share the same Git operation."""
 
-    def __init__(self):
+    def __init__(self, *, read_only=False):
+        self.read_only = bool(read_only)
         self.task = None
         self.commit = None
         self.generation = 0
@@ -31,6 +32,8 @@ class TeamCodeUpdates:
             self.notify()
 
     async def _sync(self):
+        if self.read_only:
+            raise TeamSourceError("공유 대시보드는 조회 전용입니다.")
         try:
             info = await asyncio.to_thread(sync_source, source_path())
             self.commit = info["commit"]
@@ -41,6 +44,8 @@ class TeamCodeUpdates:
             self.notify()
 
     async def sync(self):
+        if self.read_only:
+            raise TeamSourceError("공유 대시보드는 조회 전용입니다.")
         if self.task is None or self.task.done():
             self.syncing = True
             self.task = asyncio.create_task(self._sync())
@@ -49,6 +54,11 @@ class TeamCodeUpdates:
 
 
 def render_team_code(updates):
+    if getattr(updates, "read_only", False):
+        with ui.element("div").classes("uav-team-code").props("data-testid=team-source-panel"):
+            ui.label("공유 보기 · 저장된 비행 기록").classes("uav-source-version").props(
+                "data-testid=read-only-mode")
+        return
     requested = False
     busy = False
 

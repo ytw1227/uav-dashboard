@@ -59,7 +59,7 @@ def header(source, team_updates=None):
         if source == "B" and team_updates is not None:
             render_team_code(team_updates)
         if source in ("S", "B"):
-            label = "이전 70지역 공유본 · 보관용" if source == "B" else "기존 비행 공유본 받기"
+            label = f"{len(geography('B'))}개 지역 공유본 받기" if source == "B" else "기존 비행 공유본 받기"
             ui.link(label, f"/part2/data/{source}/download").classes("uav-download").props("download")
         history = ui.link(*SOURCES["L"]).classes("uav-history").props("data-source=L")
         if source == "L":
@@ -73,8 +73,10 @@ def serve_workspace(args, digests):
     from .team_replay_data import register_team_replay_routes
     from .local_view import install_assets
 
-    team_updates = TeamCodeUpdates()
-    runs = TeamUpdates(args.data_root, max_output_gib=args.max_output_gib) if args.data_root else None
+    read_only = getattr(args, "read_only", False)
+    team_updates = TeamCodeUpdates(read_only=read_only)
+    runs = TeamUpdates(args.data_root, resume=not read_only,
+                       max_output_gib=args.max_output_gib) if args.data_root else None
     install_assets()
 
     @app.get("/api/team-source", include_in_schema=False)
@@ -150,7 +152,7 @@ def serve_workspace(args, digests):
                     ui.label("이 자료에는 재생 가능한 비행이 없습니다.").props("role=status")
                     return
                 if source == "B":
-                    team = RegionalRuns(runs, library, args.service_url, team_updates)
+                    team = RegionalRuns(runs, library, args.service_url, team_updates, read_only=read_only)
                     team.render()
                 with ui.column().classes("w-full gap-2") as archive:
                     with ui.row().classes("uav-nav items-center gap-1").props('role=navigation aria-label="분석 화면"'):
@@ -167,6 +169,10 @@ def serve_workspace(args, digests):
     def home():
         return RedirectResponse(SOURCES["B"][1])
 
+    @app.get("/healthz", include_in_schema=False)
+    def health():
+        return {"status": "ok", "read_only": args.read_only}
+
     @ui.page(SOURCES["S"][1], title="상암 DMC · UAV 통신 대시보드", response_timeout=30)
     async def sangam():
         await playback_page("S")
@@ -180,7 +186,7 @@ def serve_workspace(args, digests):
         from .local_view import render_local
         header("L")
         with ui.column().classes("uav-local"):
-            render_local(base_url=args.service_url, data_root=args.data_root)
+            render_local(base_url=args.service_url, data_root=args.data_root, read_only=read_only)
 
-    ui.run(host="127.0.0.1", port=args.port, show=False, reload=False, title="UAV 통신 대시보드",
+    ui.run(host=getattr(args, "host", "127.0.0.1"), port=args.port, show=False, reload=False, title="UAV 통신 대시보드",
            show_welcome_message=False, language="ko-KR")

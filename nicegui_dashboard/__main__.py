@@ -19,7 +19,7 @@ CODECS = Path(__file__).parent / "vendor" / "codecs"
 SOURCES = {"S": "상암 최신 공유본", "B": "전체 지역 V2", "L": "로컬 결과 서비스"}
 BASELINE = {
     "S": "f9a6d575b20a1ba0c0b389b0a50b2f4a013214aff2700b2a2c35c6bc888061fa",
-    "B": "8ff2a0f512a0592cfeacf157db2eef05ecedc8d4f3bbf635ff9c87873b0d23e6",
+    "B": "4b54a990110b8404bcd26729fc2a8aac6e7afc075b822c30ecbc4bc77fc91e2d",
 }
 
 
@@ -120,7 +120,7 @@ def serve(args):
             source.on_value_change(change_source)
             ui.timer(0.1, load, once=True)
 
-    ui.run(host="127.0.0.1", port=args.port, show=False, reload=False, title="대시보드 자료 연결 확인")
+    ui.run(host=args.host, port=args.port, show=False, reload=False, title="대시보드 자료 연결 확인")
 
 
 def load_path_settings(path):
@@ -158,8 +158,19 @@ def main():
     parser.add_argument("--max-output-gib", type=float, default=os.getenv("UAV_MAX_OUTPUT_GIB", "4"),
                         help="--data-root로 여는 기존 서비스의 용량 설정(GiB)")
     parser.add_argument("--region", help="지도 ID. 생략하면 S는 상암 두 비행, B는 카탈로그를 조회합니다.")
-    parser.add_argument("--port", type=int, help="대시보드 기본 포트 8092, 자료 연결 확인 기본 포트 8091")
+    parser.add_argument("--host", default=os.getenv("UAV_HOST", "127.0.0.1"),
+                        help="접속할 네트워크 주소. 기본값은 이 컴퓨터에서만 접속 가능한 127.0.0.1")
+    parser.add_argument("--port", type=int, default=os.getenv("PORT"),
+                        help="PORT 환경변수 우선, 미지정 시 대시보드 8092·자료 연결 확인 8091")
+    read_only_value = os.getenv("UAV_READ_ONLY", "false").strip().lower()
+    if read_only_value not in {"", "0", "false", "no", "off", "1", "true", "yes", "on"}:
+        parser.error("UAV_READ_ONLY는 true 또는 false로 지정하세요.")
+    parser.add_argument("--read-only", action="store_true",
+                        default=read_only_value in {"1", "true", "yes", "on"},
+                        help="저장된 결과만 공유하고 코드 갱신·새 연구 작업을 허용하지 않습니다.")
     args = parser.parse_args()
+    if args.read_only and args.command == "team-sync":
+        parser.error("조회 전용 모드에서는 팀 코드를 갱신할 수 없습니다.")
     if args.command in ("team-sync", "team-version"):
         from .team_source import TeamSourceError, source_path, source_status, sync_source
         try:

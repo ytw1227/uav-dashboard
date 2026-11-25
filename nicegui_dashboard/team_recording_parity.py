@@ -29,3 +29,5 @@ def verify_replay(bundle, manifest, row, arrays, scene):
             if old.execute("SELECT * FROM incident_analysis ORDER BY time_s").fetchall() != new.execute(
                     "SELECT * FROM incident_analysis ORDER BY time_s").fetchall():
                 raise ValueError("원 비행의 사건 분석과 관측 비행의 기록이 다릅니다.")
+
+

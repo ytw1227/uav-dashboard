@@ -62,3 +62,4 @@ def make_payload(output_root, manifest, row, arrays, progress, checks, *, embedd
     payload["payload_sha256"] = operations_digest(payload)
     validate_operations(payload, manifest, payload["identity"])
     return payload
+
