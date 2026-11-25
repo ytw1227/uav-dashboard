@@ -127,6 +127,9 @@ export async function initialize(source, preferredRun, preferredRevision, deferI
         clearTimeout(publishTimer);
         clearTimeout(comparisonTimer);
         classes.disconnect();
+        operations.dispose();
+        operationsBindings.dispose();
+        delete window.__UAV_OPERATIONS__;
         incidentReplay.reset();
     }, {once: true});
     // The regional page chooses the team's pinned edition before opening a flight.

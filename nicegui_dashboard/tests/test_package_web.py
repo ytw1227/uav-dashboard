@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from nicegui_dashboard.__main__ import BASELINE, CODECS
 from nicegui_dashboard.package_web import PackageMedia, register_package_routes
+from nicegui_dashboard.region_selection import region_selection
 from nicegui_dashboard.tests.shared_data import shared_files
 
 
@@ -24,7 +25,7 @@ class PackageRoutesTest(unittest.TestCase):
         cls.media.close()
 
     def test_entire_catalog_and_lazy_manifests(self):
-        for source, count in (("S", 1), ("B", 70)):
+        for source, count in (("S", 1), ("B", len(region_selection()["selected_regions"]))):
             package = self.media.package(source)
             root = f"/part2/data/{source}"
             rows = self.http.get(root + "/catalog").json()
@@ -50,13 +51,24 @@ class PackageRoutesTest(unittest.TestCase):
             self.assertEqual(self.http.get(f"{root}/manifest/{rid}/{rev}").json(), package.entry(rid, rev)["manifest"])
             self.assertEqual(self.http.get(f"{root}/manifest/{rid}/wrong-revision").status_code, 404)
 
+    def test_presentation_catalog_revalidates_but_recordings_stay_cacheable(self):
+        response = self.http.get("/part2/data/B/catalog")
+        self.assertEqual(response.headers["cache-control"], "private, no-cache")
+        self.assertEqual(self.http.get("/part2/data/S/catalog").headers["cache-control"],
+                         "private, max-age=3600")
+        entry = next(iter(self.media.catalog("B")["entries"].values()))
+        response = self.http.get("/part2/data/B/packed/" + entry["scene_chunk"])
+        self.assertEqual(response.headers["cache-control"], "private, max-age=3600")
+
     def test_packed_scene_and_conditional_margins(self):
         s = self.media.package("S")
-        for source, regions in (("S", 1), ("B", 3)):
+        # One of B's three legacy margin sidecars belongs to an excluded region.
+        for source, regions in (("S", 1), ("B", 2)):
             store = self.media.package(source)
             module = self.media.margin_module(source)
             records = json.loads(module.split("export const marginRecords = ", 1)[1][:-1])
             self.assertEqual(len(records), regions * 2)
+            self.assertTrue(set(records) <= set(self.media.catalog(source)["entries"]))
             for rid, record in records.items():
                 self.assertEqual(record["revision"], store.catalog["entries"][rid]["revision"])
             for rid, entry in s.catalog["entries"].items():

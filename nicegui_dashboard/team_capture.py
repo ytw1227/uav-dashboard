@@ -146,6 +146,8 @@ def capture(code, core, spec, commit, max_seconds=None, *, nominal=False, includ
         entrypoint, flight_class, controller = selected_entry(fly, release, MODE)
         planned = entrypoint is not release
         team_flight = getattr(entrypoint, flight_class)
+        from .team_operations_probe import OperationProbe
+        operations = OperationProbe() if controller == "halfsec_planned_eight" and not nominal else None
         catalog = json.loads((core / "dashboard_execution/selected_maps.json").read_text(encoding="utf-8"))
         selected = [card for card in catalog["maps"] if card["key"] == spec["region"]]
         if len(selected) != 1:
@@ -192,6 +194,8 @@ def capture(code, core, spec, commit, max_seconds=None, *, nominal=False, includ
 
             def navigator(self, *args):
                 nav = super().navigator(*args)
+                if operations is not None:
+                    operations.attach(nav)
                 context_data["nav"] = nav
                 return nav
 
@@ -282,6 +286,10 @@ def capture(code, core, spec, commit, max_seconds=None, *, nominal=False, includ
             from .team_evaluation import capture_reference
             row["_regional_evaluation"] = capture_reference(entrypoint, release, context, core, card, row,
                                                             context_data["scene"])
+        from .team_model_metrics import native_control
+        row["_regional_control"] = native_control(row)
+        if operations is not None:
+            row["_operations_recording"] = operations.recording(end_time_s=row["duration_s"])
         return row, archive, context_data["scene"]
     finally:
         os.chdir(old_cwd)

@@ -59,7 +59,8 @@ def header(source, team_updates=None):
         if source == "B" and team_updates is not None:
             render_team_code(team_updates)
         if source in ("S", "B"):
-            ui.link("기존 비행 공유본 받기", f"/part2/data/{source}/download").classes("uav-download").props("download")
+            label = "이전 70지역 공유본 · 보관용" if source == "B" else "기존 비행 공유본 받기"
+            ui.link(label, f"/part2/data/{source}/download").classes("uav-download").props("download")
         history = ui.link(*SOURCES["L"]).classes("uav-history").props("data-source=L")
         if source == "L":
             history.props("aria-current=page")
@@ -96,6 +97,7 @@ def serve_workspace(args, digests):
         render_registry_notice(args.service_url, regional_labels)
         try:
             package = await asyncio.to_thread(media.package, source)
+            catalog = await asyncio.to_thread(media.catalog, source)
         except FileNotFoundError as exc:
             ui.label(f"{SOURCES[source][0]} 자료를 찾을 수 없습니다. {exc.filename}").props("role=alert").classes("p-5")
             if not media.paths[source].is_file():
@@ -122,7 +124,7 @@ def serve_workspace(args, digests):
 
             with ui.element("aside").classes("uav-library"):
                 with ui.expansion("지도 목록", value=source == "B").classes("w-full").props("dense"):
-                    library = render_library(package.catalog, source=source, on_select=select_flight, on_open=open_flight)
+                    library = render_library(catalog, source=source, on_select=select_flight, on_open=open_flight)
 
             nav = {}
             def update_nav(tab):
@@ -133,7 +135,7 @@ def serve_workspace(args, digests):
                 rid, revision = state.get("run_id"), state.get("revision")
                 if team:
                     team.replay_state(state)
-                elif rid in package.catalog["entries"] and revision == package.catalog["entries"][rid]["revision"]:
+                elif rid in catalog["entries"] and revision == catalog["entries"][rid]["revision"]:
                     library.sync_selection(rid, revision)
                 if state.get("tab") in TABS:
                     update_nav(state["tab"])

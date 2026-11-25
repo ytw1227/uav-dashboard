@@ -19,6 +19,9 @@ from nicegui_dashboard.ingest import load_store, publish_group
 from nicegui_dashboard.managed_service import SERVICE_PROJECT
 from nicegui_dashboard.team_baseline_record import comparison_path, load_comparison, nominal_bundle
 from nicegui_dashboard.team_forecast_record import forecast_path, load_forecast
+from nicegui_dashboard.team_evaluation import evaluation_path, read_reference
+from nicegui_dashboard.team_model_metrics import metrics_path
+from nicegui_dashboard.team_operations import operations_path
 from nicegui_dashboard.team_replay_data import unpack
 from nicegui_dashboard.team_update import TeamUpdates
 from result_service.dashboard_contract.validation import validate_bundle
@@ -45,10 +48,11 @@ def browser_inputs(bundle, applied, baseline):
                     and p is not None and unpack(frame)["metrics"]["search_connected"]):
                 forecast=[time,p]
                 break
+    evaluation = read_reference(bundle, applied)
     return dict(region=applied["region"], sha=applied["team_commit"], revision=applied["bundle_revision"],
                 controller=applied["controller"], run=rid, nominal=baseline["run_id"] if baseline else None,
                 metrics=[applied["final_metrics"],pair["nominal"]["final_metrics"] if pair else None], cut=cut,
-                forecast=forecast,evaluation=(applied.get("regional_evaluation") or {}).get("summary"))
+                forecast=forecast,evaluation=evaluation.get("summary") if evaluation else None)
 
 
 def main():
@@ -76,7 +80,9 @@ def main():
         finally:
             store.close()
         assert {p["run_id"] for p in pins} == {source.parent.name for source in sources}
-        for src in (comparison_path(bundle),forecast_path(bundle.parents[2],plan["run"],plan["revision"])):
+        for src in (comparison_path(bundle), forecast_path(bundle.parents[2],plan["run"],plan["revision"]),
+                    evaluation_path(bundle), metrics_path(bundle),
+                    operations_path(bundle.parents[2],plan["run"],plan["revision"])):
             if src.is_file():
                 dst=store_path/src.relative_to(bundle.parents[2])
                 dst.parent.mkdir(parents=True,exist_ok=True)

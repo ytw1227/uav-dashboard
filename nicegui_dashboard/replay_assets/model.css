@@ -1,0 +1,70 @@
+.uav-replay .team-model { color: #29495f; font-size: 14px; line-height: 1.65; }
+.uav-replay .team-model h3, .uav-replay .team-model h4, .uav-replay .team-model h5 { color: #1e4058; }
+.uav-replay .model-overview { background: linear-gradient(110deg,#edf6f7,#f6f8fc); padding: 25px 27px; border: 1px solid #d7e5ed; border-radius: 12px; }
+.uav-replay .model-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 18px; }
+.uav-replay .model-eyebrow { color: #567d8e; font-size: 12px; }
+.uav-replay .model-heading h3 { font-size: 23px; line-height: 1.4; margin: 7px 0 0; }
+.uav-replay .model-tag { color: #40757b; background: #e0edef; font-size: 12px; font-weight: 600; white-space: nowrap; padding: 4px 10px; border-radius: 5px; }
+.uav-replay .model-lead { max-width: 1030px; margin: 15px 0 19px; color: #516d81; line-height: 1.8; }
+.uav-replay .model-baseline-note { margin: 12px 0 0; padding: 9px 12px; border-radius: 6px; background: #fff; color: #526f83; font-size: 13px; }
+.uav-replay .model-facts { display: flex; flex-wrap: wrap; gap: 24px 42px; margin: 0; padding-top: 16px; border-top: 1px solid #d7e5e9; }
+.uav-replay .model-facts dt { font-size: 12px; color: #6c8496; }
+.uav-replay .model-facts dd { margin: 3px 0 0; font-size: 16px; font-weight: 650; color: #244c66; }
+.uav-replay .model-placement { margin-top: 17px; color: #647f91; font-size: 12px; }
+.uav-replay .model-placement > div { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+.uav-replay .model-placement > div > span { padding: 4px 9px; background: #fff; border: 1px solid #d7e3ec; border-radius: 5px; }
+.uav-replay .model-placement b { margin-left: 6px; color: #4a657b; }
+.uav-replay .model-placement [data-adopted="true"] { border-color: #adc1f1; }
+.uav-replay .model-placement [data-adopted="true"]::before { content: ''; display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: #4d79ed; margin-right: 6px; }
+.uav-replay .model-placement-note { margin: 15px 0 0; color: #748a99; font-size: 12px; }
+.uav-replay .model-recorded-notes { margin-top: 12px; padding-top: 12px; border-top: 1px solid #e3ebf0; }
+.uav-replay .model-recorded-notes summary { color: #5b788c; cursor: pointer; font-size: 13px; }
+.uav-replay .model-explainer { margin-top: 20px; padding: 23px 25px; border: 1px solid #dce6ee; background: #fff; border-radius: 12px; }
+.uav-replay .model-section-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 6px 18px; margin-bottom: 15px; }
+.uav-replay .model-section-head h4 { font-size: 17px; margin: 0; }
+.uav-replay .model-section-head > span { font-size: 12px; color: #70899a; }
+.uav-replay .model-components { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 14px; }
+.uav-replay .model-component { padding: 19px 20px; border: 1px solid #dee8ee; border-radius: 8px; background: #f8fafc; }
+.uav-replay .model-component-name { display: inline-block; color: #577b96; font-size: 12px; font-weight: 650; margin-bottom: 9px; }
+.uav-replay .team-model h5 { margin: 0; font-size: 15px; line-height: 1.5; }
+.uav-replay .model-component p, .uav-replay .model-decisions p, .uav-replay .model-reading p { margin: 9px 0 0; color: #617b8d; font-size: 13px; line-height: 1.8; }
+.uav-replay .model-blend { margin-top: 24px; padding-top: 22px; border-top: 1px solid #e5edf3; }
+.uav-replay .model-blend .model-section-head { margin-bottom: 12px; }
+.uav-replay .model-blend .model-section-head h4 { font-size: 15px; }
+.uav-replay .model-blend-bar { display: flex; gap: 3px; height: 36px; overflow: hidden; border-radius: 6px; }
+.uav-replay .model-blend-bar > span { display: flex; align-items: center; justify-content: center; font-variant-numeric: tabular-nums; font-size: 13px; font-weight: 650; color: #fff; min-width: 0; overflow: hidden; white-space: nowrap; }
+.uav-replay .blend-transformer { background: #436f8a; }
+.uav-replay .blend-lightgbm { background: #837dba; }
+.uav-replay .blend-propagation { background: #719598; }
+.uav-replay .model-blend-key { display: flex; flex-wrap: wrap; gap: 8px 20px; margin-top: 9px; font-size: 12px; color: #617e91; }
+.uav-replay .model-blend-key > span { display: inline-flex; gap: 6px; align-items: center; }
+.uav-replay .model-blend-key i { width: 9px; height: 9px; display: inline-block; border-radius: 2px; }
+.uav-replay .model-blend > p { color: #607c8f; margin: 12px 0 0; font-size: 13px; }
+.uav-replay .model-reading { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 17px; margin-top: 20px; padding: 17px 20px; border-radius: 8px; background: #f1f6f8; }
+.uav-replay .model-reading strong { color: #355e74; font-size: 14px; }
+.uav-replay .model-note { color: #7a8f9f; font-size: 12px; line-height: 1.8; margin: 15px 0 0; }
+.uav-replay .model-decisions { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 20px; }
+.uav-replay .model-decisions > article { padding: 0 20px 0 0; }
+.uav-replay .model-decisions > article + article { border-left: 1px solid #e1eaf0; padding: 0 0 0 22px; }
+.uav-replay .model-metrics-title { margin: 27px 0 12px; }
+.uav-replay .team-model .summary-grid { margin-top: 0; }
+.uav-replay .team-model .summary-description { font-size: 13px; }
+.uav-replay .team-model .summary-metrics { margin-top: 16px; }
+.uav-replay .model-provenance { margin-top: 19px; padding: 16px 20px; border: 1px solid #dce6ee; border-radius: 9px; background: #fff; font-size: 12px; overflow-wrap: anywhere; }
+.uav-replay .model-provenance summary { color: #567287; font-size: 13px; cursor: pointer; }
+.uav-replay .model-provenance h5 { margin-top: 17px; font-size: 13px; }
+.uav-replay .model-provenance ul, .uav-replay .model-release-notes { padding-left: 20px; }
+.uav-replay .model-provenance li, .uav-replay .model-release-notes li { margin: 8px 0; }
+@container (max-width: 900px) {
+    .uav-replay .model-components { grid-template-columns: 1fr; }
+    .uav-replay .model-component { padding: 16px 18px; }
+    .uav-replay .model-heading h3 { font-size: 20px; }
+}
+@container (max-width: 600px) {
+    .uav-replay .model-overview, .uav-replay .model-explainer { padding: 18px; }
+    .uav-replay .model-heading { flex-wrap: wrap; }
+    .uav-replay .model-reading, .uav-replay .model-decisions { grid-template-columns: 1fr; }
+    .uav-replay .model-decisions > article, .uav-replay .model-decisions > article + article { padding: 0; border-left: 0; }
+    .uav-replay .model-decisions > article + article { border-top: 1px solid #e1eaf0; padding-top: 17px; }
+    .uav-replay .model-reading { padding: 15px; }
+}

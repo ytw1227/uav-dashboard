@@ -279,8 +279,11 @@ def write_nominal_bundle(folder, applied, arm, nominal, frames, scene_bytes):
          "observation_definitions":dict(applied["observation_definitions"]),
          "validation_report":{"counts":counts, "safety_passed":nominal["safety_passed"],
                               "packet_conserved":nominal["packet_conserved"]}}
-    for key in ("flight_comparison", "team_model_profile", "regional_evaluation", "nominal_replay", "bundle_path"):
+    for key in ("flight_comparison", "team_model_profile", "regional_evaluation", "regional_control", "operations", "nominal_replay", "bundle_path"):
         m.pop(key, None)
+    if nominal.get("_regional_control") is not None:
+        from .team_model_metrics import validate_control
+        m["regional_control"] = validate_control(nominal["_regional_control"], m)
     if len(frames.get("fleet_onset_probability", ())):
         m["head_definitions"]["fleet_onset_probability"] = FLEET_FORECAST_HEAD
     if nominal.get("team_capture_version") == "3":
@@ -308,6 +311,11 @@ def publish_capture(record, arrays, scene_path, output_root, *, nominal=None):
                     started_at=record["started_at"], controller=record["controller"])
     fingerprint = hashlib.sha256(encode(identity)).hexdigest()
     revision_inputs = [fingerprint, record["team_capture_version"], record["completed_at"]]
+    if record.get("_operations_recording") is not None:
+        from .team_operations import recording_fingerprint
+        revision_inputs.append({"operations_sha256": recording_fingerprint(record)})
+    if record.get("_regional_control") is not None:
+        revision_inputs.append({"regional_control_sha256":hashlib.sha256(encode(record["_regional_control"])).hexdigest()})
     model_profile = verified_profile(record)
     if model_profile:
         revision_inputs.append({"team_model_profile_sha256": hashlib.sha256(encode(model_profile)).hexdigest()})
@@ -323,6 +331,9 @@ def publish_capture(record, arrays, scene_path, output_root, *, nominal=None):
         revision_inputs.append(dict(comparison_schema=2 if baseline_frames is not None else 1, nominal_metrics=totals(nominal),
                                     nominal_cuts=nominal["cuts"], target_cells=record["target_cells"],
                                     shared_cells=[nominal["shared_cells"], record["shared_cells"]]))
+        if baseline_frames is not None and nominal.get("_regional_control") is not None:
+            revision_inputs.append({"nominal_regional_control_sha256":hashlib.sha256(
+                encode(nominal["_regional_control"])).hexdigest()})
         if baseline_frames is not None and nominal.get("_regional_evaluation") is not None:
             revision_inputs.append(dict(regional_evaluation_sha256=hashlib.sha256(
                 encode(nominal["_regional_evaluation"])).hexdigest()))
@@ -366,6 +377,9 @@ def publish_capture(record, arrays, scene_path, output_root, *, nominal=None):
             artifacts=artifacts)
         if threshold is not None:
             manifest["model_threshold"] = threshold
+        if record.get("_regional_control") is not None:
+            from .team_model_metrics import validate_control
+            manifest["regional_control"] = validate_control(record["_regional_control"], manifest)
         if model_profile:
             manifest["team_model_profile"] = model_profile
         if len(arrays.get("fleet_onset_probability", ())):
@@ -388,6 +402,8 @@ def publish_capture(record, arrays, scene_path, output_root, *, nominal=None):
                 if nominal.get("_regional_evaluation") is not None:
                     from .team_evaluation import store_reference
                     store_reference(bundle, manifest, nominal)
+        from .team_operations import store_operations
+        store_operations(bundle, manifest, record, arrays)
         (bundle/"manifest.json").write_bytes(encode(manifest))
         (bundle/"READY").write_bytes(encode(dict(manifest_sha256=digest(bundle/"manifest.json"))))
         store = load_store(SERVICE_PROJECT, output_root, quota_gib=quota)

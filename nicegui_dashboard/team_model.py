@@ -1,5 +1,6 @@
 """Read model documentation and evaluation from the exact team Git revision used for a flight."""
 from functools import lru_cache
+from copy import deepcopy
 import hashlib
 import json
 import math
@@ -134,11 +135,22 @@ def verified_profile(flight):
         return None
 
 
-def model_for_flight(manifest):
+def model_for_flight(manifest, bundle=None):
     pin = identity(manifest)
     profile = manifest.get("team_model_profile")
     if (not isinstance(profile, dict) or profile.get("identity") != pin or profile.get("status") != "verified"
             or (manifest.get("model_threshold") is not None
                 and manifest["model_threshold"] != profile.get("model", {}).get("threshold"))):
         profile = verified_profile(manifest)
+    if bundle is not None and manifest.get("mode") != "nominal" and manifest["run_id"].startswith("team-"):
+        from .team_model_metrics import regional_metrics
+        # The cached release profile belongs to many flights. Never attach a
+        # region or revision to that shared object in place.
+        profile = deepcopy(profile) if profile is not None else dict(identity=pin, status="unverified")
+        try:
+            profile["regional"] = regional_metrics(bundle, manifest)
+        except (ValueError, OSError, KeyError, TypeError) as exc:
+            import logging
+            logging.getLogger(__name__).warning("Regional model metrics rejected for %s: %s", manifest["run_id"], exc)
+            profile["regional"] = dict(status="error", message="선택한 비행의 지역 평가 기록을 확인할 수 없습니다.")
     return dict(run_id=manifest["run_id"], revision=manifest["bundle_revision"], identity=pin, profile=profile)

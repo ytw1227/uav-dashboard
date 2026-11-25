@@ -32,6 +32,9 @@ def _markup() -> tuple[str, ...]:
     template = (SOURCE / 'index.html').read_text(encoding='utf-8-sig')
     template = template.replace('현재 적용한 11월 13일 모델 · 복구 보강의 정보와 저장된 평가 성능입니다.',
                                 '선택한 비행에 대응하는 모델 정보와 저장된 평가 성능입니다.')
+    template = template.replace('<section id="flightMetricsPanel" class="panel" hidden></section>',
+                                '<section id="flightMetricsPanel" class="panel" hidden></section>\n'
+                                '<section id="operationsPanel" class="panel" hidden></section>')
     return (
         _between(template, '<div id="notice"', '<nav class="tabs"'),
         _between(template, '<section id="analysisView">', '<section id="compareView"'),
@@ -51,6 +54,28 @@ def _controller() -> str:
     keep the analytic sections and their original keyboard/camera/time logic.
     """
     code = (SOURCE / 'app.js').read_text(encoding='utf-8-sig')
+    operations_setup = '''let operationsBindings;
+const operations=createOperations({host:$('operationsPanel'),Plot:window.Plotly,
+ onSeek:value=>{S.playing=false;setTime(value)},
+ onSelectDrone:id=>{if(!(S.manifest?.fleet||[]).some(n=>n.id===id))return;S.playing=false;S.pairSelectionVersion++;S.node=id;
+  if(S.peer===id)S.peer=S.manifest.fleet.find(n=>n.id!==id)?.id;
+  syncSelectionControls();S.obsWindow=null;S.observations=[];renderAnalysis();requestObservations()},
+ onRolesChanged:roles=>{operationsBindings?.refresh();if(roles.length&&S.scene&&!S.flightLoading)renderAnalysis()}});
+operationsBindings=createOperationsBindings(operations);
+window.__UAV_OPERATIONS__=operationsBindings;
+window.__UAV_OPERATIONS_TEST__={snapshot:()=>operations.snapshot(),readout:(t,id)=>operations.getReadout(t,id)};
+function renderOperations(){operations.update({manifest:S.manifest,time:S.time,observer:S.node,overview:S.overview,
+ events:S.events,activeEvent:selectedEvent()});operationsBindings.update(S);}
+'''
+    hooks = {
+        'const incidentReplay=createIncidentReplay(': operations_setup + 'const incidentReplay=createIncidentReplay(',
+        'flightMetrics.reset();': 'flightMetrics.reset();operations.reset();operationsBindings.reset();',
+        'renderInspector(a);if(S.tab': 'renderInspector(a);renderOperations();if(S.tab',
+    }
+    for original, replacement in hooks.items():
+        if code.count(original) != 1:
+            raise ValueError('역할·고도 표시를 연결할 재생 경계가 변경되었습니다: ' + original)
+        code = code.replace(original, replacement)
     code = code.replace('const pair = pairedFlights(S.runs, row);',
                         'const pair = teamPair(row) || pairedFlights(S.runs, row);')
     code = code.replace('const pair = pairedFlights(S.runs, selectedCatalogRun());',
@@ -79,6 +104,8 @@ def _controller() -> str:
     # package's header 'shareButton' is absent from the replay surface.
     analytic = re.sub(r"\$\('shareButton'\)\.title=[^;]+;", '', analytic)
     return '\n'.join([
+        'import {createOperations} from "./operations.js";',
+        'import {createOperationsBindings} from "./operations_bindings.js";',
         'import {teamContext,teamDescriptor,teamManifest,teamPair,setTeamFlight,readTeamComparison} from "./team_flight.js";',
         'import {teamModel} from "./team_model.js";',
         code[:code.index('async function api(')].replace("'./main_plotly.js'", "'./map_display.js'"),
@@ -120,7 +147,9 @@ def _stylesheet() -> str:
     # subtree. The NiceGUI library and operations retain their own visual rules.
     css = '\n'.join(sheets).replace(':root', ':scope')
     css = re.sub(r'(?<![\w-])body(?=[{.\s,])', ':scope', css)
-    return '@scope (.uav-replay){\n' + css + '\n}\n' + (ASSETS / 'surface.css').read_text(encoding='utf8')
+    extras = '\n'.join((ASSETS / name).read_text(encoding='utf8') for name in
+                       ('surface.css', 'operations.css', 'operations_bindings.css', 'model.css'))
+    return '@scope (.uav-replay){\n' + css + '\n}\n' + extras
 
 
 @app.get(BASE + '/style.css', include_in_schema=False)
@@ -137,7 +166,8 @@ def replay_module(source: str, name: str):
         body = _controller()
     elif name == 'flight_metrics.js':
         body = _flight_metrics()
-    elif name in {'bootstrap.js', 'map_display.js', 'evaluation_read.js', 'team_flight.js', 'team_readouts.js', 'team_model.js'}:
+    elif name in {'bootstrap.js', 'map_display.js', 'evaluation_read.js', 'team_flight.js', 'team_readouts.js', 'team_model.js',
+                  'operations.js', 'operations_bindings.js'}:
         body = (ASSETS / name).read_text(encoding='utf8')
     elif name == 'margin_data.js':
         body = f"export {{marginRecords, warningThresholds}} from '/part2/data/{source}/margins.js';"
@@ -145,6 +175,19 @@ def replay_module(source: str, name: str):
         body = (SOURCE / name).read_text(encoding='utf-8-sig')
         if name == 'library.js':
             body = body.replace("return m.adapter_id==='final-v1'", "return m.adapter_id==='team-halfsec'||m.adapter_id==='final-v1'")
+        elif name == 'map_status.js':
+            body = body.replace('element.hidden = !id;', "element.dataset.droneId = id || '';element.hidden = !id;")
+            original = "const color = node?.status === 'connected' ? connected[node.role] : colors[node?.status];"
+            if body.count(original) != 1:
+                raise ValueError('기체 역할 색을 연결할 표시 경계가 변경되었습니다.')
+            body = body.replace(original,
+                                "const baseColor = node?.status === 'connected' ? connected[node.role] : colors[node?.status];"
+                                "const color = globalThis.__UAV_OPERATIONS__?.paint(communication,id,baseColor) ?? baseColor;")
+        elif name == 'event_replay.js':
+            marker = 'globalThis.__UAV_PRESENTATION__?.updateIncident({context:mapView,replayContext:c,time:t});'
+            if body.count(marker) != 1:
+                raise ValueError('사건 재생의 고도 표시 연결 경계가 변경되었습니다.')
+            body = body.replace(marker, marker+'globalThis.__UAV_OPERATIONS__?.updateIncident({context:mapView,time:t});')
     else:
         raise HTTPException(404)
     return Response(adapt(name, body), media_type='text/javascript', headers={'Cache-Control': 'no-cache'})

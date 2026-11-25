@@ -98,3 +98,32 @@ class TeamBundleTests(unittest.TestCase):
                         dict(generated=11), dict(timely=6, timely_pdr=.6), dict(timely_pdr=.8)):
             with self.subTest(changes=changes), self.assertRaises(ValueError):
                 validate_capture({**self.record,**changes},self.a)
+
+    def test_auto_operation_artifact_survives_publication_and_changes_revision(self):
+        from copy import deepcopy
+        from nicegui_dashboard.team_operations import load_operations
+        from result_service.dashboard_contract.validation import validate_bundle
+        self.record.update(controller="halfsec_planned_eight",placement={"station":None,"windows":[]},
+                           altitude_windows=[],altitude_moves=[],coverage=1.,waypoints_reached=4,
+                           waypoints_total=4,cleared_stages=0,clearance_edges=0)
+        before=publish_capture(self.record,self.a,self.scene,self.root/"store")
+        self.record["_operations_recording"] = dict(schema_version=1,source="native_navigation_callbacks",checks=[],
+            progress=[dict(time_s=i*.5,state="search",stage=i,waypoints_reached=i,waypoints_total=4,
+                           coverage=i/4,heights_m=[20.]*3,clearing=False,entry_waiting=False,descent_check=False)
+                      for i in range(5)])
+        self.record["end_altitudes_m"]=[20.]*3
+        self.a.update(altitudes=np.full((4,3),20.,dtype=np.float32),display_margin=self.a["margin_db"],
+                      margin_edge=np.zeros((4,2),dtype=int),margin_pair=np.zeros((4,2),dtype=int),
+                      margin_path=np.zeros((4,3),dtype=int))
+        untouched=deepcopy(self.record)
+        after=publish_capture(self.record,self.a,self.scene,self.root/"store")
+        self.assertEqual(before["run_id"],after["run_id"])
+        self.assertNotEqual(before["revision"],after["revision"])
+        self.assertEqual(self.record,untouched)
+        bundle=self.root/"store"/"bundles"/after["run_id"]/after["revision"]
+        manifest=validate_bundle(bundle)
+        data=load_operations(self.root/"store",manifest)
+        self.assertEqual(data["status"],"available")
+        self.assertEqual(len(data["progress"]),5)
+        self.assertEqual(data["progress"][1]["network_connected"],False)
+        self.assertEqual(manifest["final_metrics"]["pdr"],.9)

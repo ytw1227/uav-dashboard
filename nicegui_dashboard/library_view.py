@@ -5,11 +5,13 @@ import json
 import math
 from dataclasses import dataclass, replace
 from datetime import datetime
-from functools import lru_cache, partial
+from functools import lru_cache
 from pathlib import Path
 from typing import Awaitable, Callable
 
 from nicegui import ui
+
+from .region_selection import select_geography
 
 
 _REGION_TABLE = Path(__file__).parent / "vendor/sangam/geography.js"
@@ -21,7 +23,7 @@ SelectFlight = Callable[[str, str], Awaitable | None]
 
 
 @lru_cache(maxsize=2)
-def geography(source: str) -> list[dict]:
+def geography(source: str, *, include_excluded: bool = False) -> list[dict]:
     # Both builders publish their ordered geography table as a literal JSON array.
     if source not in ("S", "B"):
         raise ValueError("지원하는 카탈로그는 S와 B입니다.")
@@ -29,7 +31,8 @@ def geography(source: str) -> list[dict]:
     prefix, marker, literal = text.partition("export const DEMO_MAPS =")
     if prefix.strip() or not marker:
         raise ValueError(f"{source} 지역 이름 표를 읽을 수 없습니다.")
-    return json.loads(literal.strip().removesuffix(";"))
+    names = json.loads(literal.strip().removesuffix(";"))
+    return names if include_excluded else select_geography(names, source)
 
 
 def _ratio(value):
@@ -235,6 +238,50 @@ class LibraryView:
             self.summary = ui.column().classes("w-full gap-1 text-sm")
             self.listing = ui.column().classes("w-full gap-2 flex-nowrap").style(
                 "max-height:62vh; overflow-y:auto; padding:2px").props("data-testid=library-cards")
+            # This parent survives card replacement when a flight-mode update is
+            # acknowledged. Per-button callbacks can disappear before a queued
+            # click reaches Python, so capture the user's destination here.
+            self.listing.on("click", self._open_region, js_handler="""event => {
+                const card = event.target.closest('button[data-region]');
+                if (!card || !event.currentTarget.contains(card) || card.disabled) return;
+                const mode = window.__uavLibraryModeIntent || card.dataset.flightMode;
+                emit({region:card.dataset.region, mode});
+            }""")
+        self.mode.on("update:model-value", js_handler=
+                     "value => window.__uavRememberLibraryMode?.(" + json.dumps(list(MODES)) + "[value?.value])")
+        ui.run_javascript("""(() => {
+            let checking = false, disposed = false;
+            const listId = __LIST_ID__;
+            window.__uavLibraryModeIntent = null;
+            window.__uavRememberLibraryMode = mode => {
+                if (!['v21','nominal'].includes(mode)) return;
+                window.__uavLibraryModeIntent = mode;
+                if (checking) return;
+                checking = true;
+                const check = () => {
+                    if (disposed) return;
+                    const intended = window.__uavLibraryModeIntent;
+                    const replay = window.uavReplay?.snapshot();
+                    const list = document.getElementById(listId);
+                    if (replay && !replay.loading && replay.mode === intended &&
+                        list?.dataset.flightMode === intended) window.__uavLibraryModeIntent = null;
+                    if (window.__uavLibraryModeIntent) requestAnimationFrame(check);
+                    else checking = false;
+                };
+                requestAnimationFrame(check);
+            };
+            const rememberTab = event => {
+                const tab = event.target.closest?.('#flightV21,#flightNominal');
+                if (tab && !tab.disabled) window.__uavRememberLibraryMode(tab.id === 'flightV21' ? 'v21' : 'nominal');
+            };
+            document.addEventListener('click', rememberTab, true);
+            window.addEventListener('pagehide', () => {
+                disposed = true;
+                document.removeEventListener('click', rememberTab, true);
+                delete window.__uavRememberLibraryMode;
+                delete window.__uavLibraryModeIntent;
+            }, {once:true});
+        })();""".replace("__LIST_ID__", json.dumps(self.listing.html_id)))
         self._render()
 
     @staticmethod
@@ -312,6 +359,18 @@ class LibraryView:
         self.sync_selection(*flight.key)
         return self.on_open(*flight.key)
 
+    def _open_region(self, event):
+        payload = event.args
+        if not isinstance(payload, dict):
+            return None
+        card = next((item for item in self.cards if item.region == payload.get("region")), None)
+        mode = payload.get("mode")
+        if card is None or mode not in card.flights:
+            return None
+        if self.mode.value != mode:
+            self.select_mode_for_result(card.region, mode)
+        return self._open_card(card.flights[mode])
+
     def sync_selection(self, run_id, revision):
         """Reflect the map's own flight buttons without reissuing a navigation action."""
         key = run_id, revision
@@ -330,6 +389,7 @@ class LibraryView:
 
     def _render(self):
         mode, metric, order = self.mode.value, self.metric.value, self.sort.value
+        self.listing.props(f"data-flight-mode={mode}")
         filters = dict(mode=mode, province=self.province.value, district=self.district.value,
                        search=self.search.value or "", metric=metric, order=order)
         result = filter_cards(self.cards, **filters)
@@ -350,15 +410,14 @@ class LibraryView:
             if not result.visible:
                 ui.label("조건에 맞는 지도가 없습니다. 마지막으로 연 비행을 유지합니다.").classes("text-sm")
             for card in result.visible:
-                flight = card.flights[mode]
-                button = ui.button(color=None, on_click=partial(self._open_card, flight)).props(
-                    f"flat no-caps align=left data-region={card.region}").classes("uav-region-card w-full")
+                button = ui.button(color=None).props(
+                    f"flat no-caps align=left data-region={card.region} data-flight-mode={mode}").classes("uav-region-card w-full")
                 self.buttons[card.region] = button
                 with button, ui.column().classes("w-full min-w-0 items-stretch gap-0"):
                     ui.label(card.label).classes("font-bold leading-tight")
                     ui.label(f"{card.province} · {card.district}").classes("text-xs text-slate-600")
                     if card.team_sha:
-                        description = ("팀 실행" if mode == "v21" else "기본 대형") + f" · {card.team_sha[:7]}"
+                        description = ("적용 모델" if mode == "v21" else "기본 대형") + f" · {card.team_sha[:7]}"
                         if mode == "nominal" and not card.nominal_replay:
                             description += " · 재생 기록 없음"
                         ui.label(description).classes("text-xs font-semibold")

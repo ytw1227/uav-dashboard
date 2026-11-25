@@ -322,7 +322,19 @@ def register_team_replay_routes(app, output_root):
     @app.get(prefix + "/model", include_in_schema=False)
     def model(rid: str, revision: str):
         from .team_model import model_for_flight
-        return json_response(model_for_flight(record(rid, revision)[2][0]))
+        root, _, (manifest, _, _) = record(rid, revision)
+        return json_response(model_for_flight(manifest, root))
+
+    @app.get(prefix + "/operations", include_in_schema=False)
+    def operations(rid: str, revision: str):
+        from .team_operations import load_operations
+        root, _, (manifest, _, _) = record(rid, revision)
+        try:
+            payload = load_operations(root.parents[2], manifest)
+        except (ValueError, OSError, KeyError, TypeError) as exc:
+            logging.getLogger(__name__).warning("Invalid operations record for %s/%s: %s", rid, revision, exc)
+            payload = dict(status="error", message="선택한 비행의 역할·고도 운용 기록을 확인할 수 없습니다.")
+        return json_response(payload)
 
     @app.get(prefix + "/evaluation", include_in_schema=False)
     def evaluation(rid: str, revision: str):

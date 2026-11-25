@@ -182,14 +182,14 @@ async function main() {
     await other.close();
     assert.match(await page.getByTestId('team-result-source').innerText(), /aaaaaaa.*bbbbbbb/);
     await page.getByTestId('team-run-scope').click();
-    await page.getByRole('option', {name:'전체 70개 지역'}).click();
-    assert.equal(await start.innerText(), '전체 70개 지역 새 비행 실행');
-    assert.match(await page.getByTestId('team-run-eligibility').innerText(), /실행 가능 69개/);
+    await page.getByRole('option', {name:'전체 50개 지역'}).click();
+    assert.equal(await start.innerText(), '전체 50개 지역 새 비행 실행');
+    assert.match(await page.getByTestId('team-run-eligibility').innerText(), /실행 가능 49개/);
     await start.click();
     await page.getByTestId('team-run-retry').waitFor();
-    assert.match(await page.getByTestId('team-run-status').innerText(), /실패 69 · 실행 제외 1/);
+    assert.match(await page.getByTestId('team-run-status').innerText(), /실패 49 · 실행 제외 1/);
     await page.getByTestId('team-run-retry').click();
-    await page.waitForFunction(() => document.querySelector('[data-testid=team-run-status]')?.textContent.includes('대기 69'));
+    await page.waitForFunction(() => document.querySelector('[data-testid=team-run-status]')?.textContent.includes('대기 49'));
     assert.equal(await start.isDisabled(), true);
     await page.addInitScript(() => {
       window.openedFlights = [];
@@ -210,7 +210,7 @@ async function main() {
     assert.deepEqual(await page.evaluate(() => window.openedFlights), ['team-synthetic-browser-flight']);
     assert.equal(await start.isDisabled(), true);
     assert.deepEqual(errors, []);
-    console.log('PASS: native team replay surface, recorded KPIs/clock/incident, archive switching, 70-region queue and failed retry (synthetic).');
+    console.log('PASS: native team replay surface, recorded KPIs/clock/incident, archive switching, 50-region queue and selected failed retry (synthetic).');
   } finally {
     await browser.close();
   }

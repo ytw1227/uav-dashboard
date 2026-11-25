@@ -138,26 +138,30 @@ def main():
                 assert commit == checkout["commit"]
                 checkout["starts"] += 1
                 self.invocations.append(regions)
+                if len(self.invocations) == 3:
+                    expected = {i["region"] for i in self.work["items"] if i["state"] == "failed"}
+                    assert len(regions) == 49 and set(regions) == expected
+                    self.work = dict(sha=commit, total=49, queued=49, running=0, active=True,
+                                     region=None, completed=0, failed=0, unavailable=0,
+                                     items=[dict(region=r, state="queued") for r in regions])
+                    return
                 if len(regions) == 1:
                     assert regions == ["bundang"]
                     self.published = True
                     state = "completed"
                 else:
-                    assert len(regions) == len(set(regions)) == 70
+                    from nicegui_dashboard.region_selection import region_selection
+                    assert len(regions) == len(set(regions)) == 50
+                    assert set(regions) == set(region_selection()["selected_regions"])
                     state = "failed"
                 self.work = dict(sha=commit, total=len(regions), queued=0, running=0,
                                  active=False, region=None, completed=0, failed=0)
                 self.work[state] = len(regions)
                 self.work["items"] = [dict(region=r, state=state, message="브라우저 검증용") for r in regions]
-                if len(regions) == 70:
-                    self.work["failed"] = 69
+                if len(regions) == 50:
+                    self.work["failed"] = 49
                     self.work["unavailable"] = 1
                     next(i for i in self.work["items"] if i["region"] == "sangam_dmc")["state"] = "unavailable"
-
-            def retry(self):
-                assert len(self.invocations) == 2 and self.work["failed"] == 69
-                self.work = dict(self.work, queued=69, failed=0, active=True,
-                                 items=[dict(i, state="queued") if i["state"] == "failed" else i for i in self.work["items"]])
 
         with socket.socket() as listener:
             listener.bind(("127.0.0.1", 0))

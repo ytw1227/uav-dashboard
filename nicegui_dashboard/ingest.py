@@ -18,6 +18,7 @@ import time
 from .managed_service import SERVICE_PROJECT
 
 BUNDLE_FILES = ("manifest.json", "scene.json", "data.sqlite", "READY")
+SUPPLEMENTAL_FILES = ("regional_evaluation.json", "operations.json")
 
 
 def utc():
@@ -65,8 +66,7 @@ def publish_group(sources, store):
                 if read_json(confined(source, "READY"), 4096).get("manifest_sha256") != expected_hash:
                     raise ValueError("READY and manifest disagree")
                 target = confined(store.output, Path("bundles") / rid / rev, must_exist=False)
-                extra = "regional_evaluation.json"
-                names = (*BUNDLE_FILES, extra) if extra in manifest["artifacts"] else BUNDLE_FILES
+                names = (*BUNDLE_FILES, *(name for name in SUPPLEMENTAL_FILES if name in manifest["artifacts"]))
                 if target.exists():
                     target_manifest = validate_bundle(target)
                     if sha256(target / "manifest.json") != expected_hash:
@@ -118,12 +118,13 @@ def publish_group(sources, store):
 
 def _check_reference(directory, manifest):
     from dashboard_contract.validation import confined, sha256
-    name = "regional_evaluation.json"
-    if name in manifest["artifacts"]:
+    for name in SUPPLEMENTAL_FILES:
+        if name not in manifest["artifacts"]:
+            continue
         artifact = manifest["artifacts"][name]
         path = confined(directory, name)
         if path.stat().st_size != artifact["size_bytes"] or sha256(path) != artifact["sha256"]:
-            raise ValueError("지역 평가 파일이 비행의 검사값과 일치하지 않습니다.")
+            raise ValueError("추가 기록 파일이 비행의 검사값과 일치하지 않습니다.")
 
 
 def publish(source, store):

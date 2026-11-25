@@ -106,7 +106,11 @@ async function main() {
         }
         await page.locator('button[data-uav-tab="performance"]').click();
         const model=page.locator('#performanceContent');
-        await model.getByText('현재 비행에 사용한 모델',{exact:true}).waitFor();
+        await model.locator('.model-overview .model-heading h3').waitFor();
+        // The redesigned model page puts technical identity in an expandable
+        // provenance section while preserving its exact release information.
+        await model.locator('.model-provenance > summary').click();
+        await model.locator('.model-provenance[open]').waitFor();
         const text=await model.innerText();
         assert.ok(text.includes(x.controller));
         assert.match(text,/0\.5초/);
@@ -121,7 +125,7 @@ async function main() {
             console.log('Native nominal cards/3D',JSON.stringify(nominalCards));
             await page.locator('#flightV21').click();
             await checkArm(page,0);
-            await region.filter({hasText:'팀 실행'}).waitFor();
+            await region.filter({hasText:'적용 모델'}).waitFor();
         } else {
             assert.equal(await page.locator('#flightNominal').isDisabled(),true);
             console.log('Historical native nominal trajectory unavailable, switch disabled');

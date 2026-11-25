@@ -7,6 +7,7 @@ from nicegui import ui
 
 from .team_baseline_record import comparison_path, load_comparison, nominal_bundle
 from .team_source import source_path, source_status
+from .region_selection import failed_presentation_regions, presentation_batch_status
 
 
 STATES = {"queued": "대기", "running": "실행 중", "completed": "완료", "failed": "실패", "unavailable": "실행 제외",
@@ -167,7 +168,7 @@ class RegionalRuns:
                 note = f"연결 버전 {self.coverage_sha[:7]} · {self.card.label} · " + ("실행 가능" if possible else (row.get("reason") or "이 버전에 실행용 지도가 없습니다."))
         self.eligible_note.set_text(note)
         self.start.set_enabled(available and possible)
-        self.retry.set_enabled(available and checked)
+        self.retry.set_enabled(available and checked and bool(failed_presentation_regions(batch, self.labels)))
         self.cancel.set_visibility(bool(batch.get("active")))
         self.cancel.set_text("갱신 중단 중" if batch.get("cancelling") else "현재 갱신 중단")
         self.cancel.set_enabled(self.updates is not None and not self.busy and bool(batch.get("active"))
@@ -235,7 +236,10 @@ class RegionalRuns:
         batch = self.batch_seen if isinstance(self.batch_seen, dict) else {}
         selected = self.card.region if self.card else None
         try:
-            await asyncio.to_thread(self.updates.retry)
+            regions = failed_presentation_regions(batch, self.labels)
+            if not regions:
+                raise ValueError("현재 표시 지역에는 다시 실행할 실패 기록이 없습니다.")
+            await asyncio.to_thread(self.updates.start_many, regions, batch["sha"])
             if click == self.user_selection and any(i["region"] == selected and i["state"] == "failed"
                                                    for i in batch.get("items", [])):
                 self.requested_display = (selected, batch["sha"])
@@ -250,20 +254,22 @@ class RegionalRuns:
     def draw_batch(self, batch):
         self.batch_seen = batch
         self.update_button()
-        self.retry.set_visibility(bool(batch and batch.get("failed") and not batch.get("active")))
+        self.retry.set_visibility(bool(failed_presentation_regions(batch, self.labels)) and not batch.get("active"))
         self.job_items.clear()
         message = ""
-        if batch:
-            counts = " · ".join(f"{label} {batch.get(state, 0)}" for state, label in STATES.items()
-                                if state not in ("cancelling", "cancelled") or batch.get(state))
-            message = f"팀 {batch['sha'][:7]} · {counts}"
-            reused = sum(item.get("phase") == "reused" for item in batch.get("items", []))
+        shown = presentation_batch_status(batch, self.labels)
+        if shown:
+            counts = " · ".join(f"{label} {shown.get(state, 0)}" for state, label in STATES.items()
+                                if state not in ("cancelling", "cancelled") or shown.get(state))
+            scope = "표시 지역 기준 · " if len(shown["items"]) != len(batch.get("items", [])) else ""
+            message = f"팀 {shown['sha'][:7]} · {scope}{counts}"
+            reused = sum(item.get("phase") == "reused" for item in shown["items"])
             if reused:
                 message += f" · 완료 중 기존 결과 재사용 {reused}"
-            if batch.get("region"):
-                message += f" · {self.labels.get(batch['region'], batch['region'])}"
+            if shown.get("region"):
+                message += f" · {self.labels[shown['region']]}"
             with self.job_items:
-                for item in batch.get("items", []):
+                for item in shown["items"]:
                     region, state = item["region"], item["state"]
                     line = f"{self.labels.get(region, region)} · {STATES.get(state, state)}"
                     if item.get("message") and (state in ("running", "failed", "unavailable") or item.get("phase") == "reused"):
@@ -311,7 +317,9 @@ class RegionalRuns:
                     coverage = None
                     coverage_error = f"실행 가능 지역 확인 필요 · {exc}"
                 if sha == self.code_updates.commit and generation == self.code_updates.generation and not self.code_updates.syncing:
-                    self.coverage_sha, self.coverage = sha, coverage
+                    self.coverage_sha = sha
+                    self.coverage = ({r: row for r, row in coverage.items() if r in self.labels}
+                                     if coverage is not None else None)
                     self.coverage_generation = generation
                     self.coverage_error = coverage_error
                     self.update_button()

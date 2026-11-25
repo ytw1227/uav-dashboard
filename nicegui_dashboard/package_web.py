@@ -13,6 +13,7 @@ from fastapi import HTTPException
 from fastapi.responses import FileResponse, Response
 
 from .portable import PortableDashboard
+from .region_selection import presentation_catalog
 
 
 VENDOR = Path(__file__).parent / "vendor"
@@ -58,7 +59,7 @@ class PackageMedia:
 
     @lru_cache(maxsize=2)
     def catalog_bytes(self, source):
-        catalog = self.package(source).catalog
+        catalog = self.catalog(source)
         # The adapter only needs fleet and duration to window the recordings.
         # Retrieve a complete manifest, including definitions and provenance, on selection.
         entries = {}
@@ -66,6 +67,9 @@ class PackageMedia:
             manifest = entry["manifest"]
             entries[rid] = {**entry, "manifest": {key: manifest[key] for key in ("fleet", "simulation_end_s")}}
         return compressed_json({**catalog, "entries": entries})
+
+    def catalog(self, source):
+        return presentation_catalog(self.package(source).catalog, source)
 
     @lru_cache(maxsize=12)
     def packed(self, source, chunk):
@@ -137,6 +141,8 @@ class PackageMedia:
             except (ValueError, OSError, KeyError, EOFError) as exc:
                 self.sidecar_status["regional_margins"] = str(exc)
         # Same thresholds as the proven margin_data module, with source-specific records.
+        visible = self.catalog(source)["entries"]
+        records = {rid: value for rid, value in records.items() if rid in visible}
         return ("export const warningThresholds = {enter:5, exit:7};\nexport const marginRecords = "
                 + json.dumps(records, ensure_ascii=False, separators=(",", ":")) + ";")
 
@@ -159,7 +165,9 @@ def register_package_routes(app, media):
     @app.get(base + "/catalog")
     def catalog(source: str):
         store(source)
-        return zipped(media.catalog_bytes(source), "application/json")
+        # B is a current presentation index, unlike the immutable flight chunks.
+        headers = {"Cache-Control": "private, no-cache"} if source == "B" else {}
+        return zipped(media.catalog_bytes(source), "application/json", **headers)
 
     @app.get(base + "/manifest/{rid}/{revision}")
     def manifest(source: str, rid: str, revision: str):

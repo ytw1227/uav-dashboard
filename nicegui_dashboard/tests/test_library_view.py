@@ -16,7 +16,9 @@ class LibraryParity(unittest.TestCase):
             with PortableDashboard(path, codec_dir=CODECS) as archive:
                 cls.catalogs[source] = archive.catalog
         cls.s = map_cards(cls.catalogs["S"], geography("S"))
-        cls.b = map_cards(cls.catalogs["B"], geography("B"))
+        # Preserve the original 70-region metric fixtures independently of the
+        # current presentation subset (covered in test_region_selection).
+        cls.b = map_cards(cls.catalogs["B"], geography("B", include_excluded=True))
 
     def test_map_and_flight_counts(self):
         for cards, n in ((self.s, 1), (self.b, 70)):

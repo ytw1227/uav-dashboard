@@ -1,0 +1,4 @@
+.uav-replay .ops-role-badge{display:block;font-size:12px;line-height:1.5;color:#38556c;background:#edf2f7;border-radius:4px;padding:2px 6px;margin-top:3px;white-space:normal}
+.uav-replay .ops-duty-readout{font-size:13px;line-height:1.6;color:#36536a;border-top:1px solid #e4ebf0;margin-top:6px;padding-top:8px}
+.uav-replay .ops-map-readout{font-size:13px;line-height:1.6;background:#f1f5f8;color:#28485c;padding:7px 12px;border-top:1px solid #dce6ed}
+.uav-replay .ops-map-readout[hidden]{display:none!important}
