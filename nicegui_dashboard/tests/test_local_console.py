@@ -9,6 +9,22 @@ from nicegui_dashboard.local_view import Console, Operations, geography, groups_
 
 
 class ConsoleTests(unittest.TestCase):
+    def test_ctr_uses_each_exporters_original_definition(self):
+        api = Operations()
+        team = {"id":"team-halfsec.ctr", "scope":"run_total", "unit":"ratio", "definition_hash":"team"}
+        unrelated = {**team, "id":"other.ctr"}
+        raw = {"runs": [{"metrics":{"ctr":{"value":.9969, "definition":team}}}],
+               "groups":[{"metrics":[{"metric_id":"ctr", "definition":team}]},
+                         {"metrics":[{"metric_id":"ctr", "definition":unrelated}]}]}
+        with patch.object(api, "_request", return_value=raw) as request:
+            result = api.compare([("run", "rev")], "search_connected_mean")
+        request.assert_called_once_with("POST", "compare", {
+            "runs":[{"run_id":"run", "revision":"rev"}], "metric_ids":["search_connected_mean","ctr"]})
+        self.assertEqual(result["groups"][0]["metrics"][0]["metric_id"], "search_connected_mean")
+        self.assertEqual(result["groups"][1]["metrics"][0]["metric_id"], "ctr")
+        field = result["runs"][0]["metrics"]["search_connected_mean"]
+        self.assertEqual((field["value"], field["definition"]["definition_hash"]), (.9969, "team"))
+
     def test_summary_and_conflict_are_never_flights(self):
         base = {"run_id":"run-12345678", "bundle_revision":"rev-1", "exported_at":"2026-01-01T00:00:00Z"}
         rows = [base, {**base,"bundle_revision":"rev-2","exported_at":"2026-01-02T00:00:00Z"},

@@ -112,6 +112,7 @@ def main():
 
         class Queue:
             def __init__(self, output_root, *, max_output_gib):
+                self.output_root = Path(output_root)
                 self.published = False
                 self.work = None
                 self.invocations = []

@@ -95,7 +95,7 @@ class TeamUpdateTests(unittest.TestCase):
         self.assertTrue((code / "run_latest_final_v1.py").is_file())
         self.assertEqual((code / "model.bin").read_bytes(), b"shared model")
         tag = (code / "flight.py").read_text(encoding="utf-8")
-        payload = {"run_id": "run-" + job["region"], "revision": "test-" + tag}
+        payload = {"run_id": "team-" + job["region"], "revision": "test-" + tag}
         dest = self.manager.output_root / "bundles" / payload["run_id"] / payload["revision"]
         dest.mkdir(parents=True, exist_ok=True)
         artifacts = {"scene.json": {"size_bytes": 2}, "data.sqlite": {"size_bytes": len(tag)}}
@@ -104,6 +104,21 @@ class TeamUpdateTests(unittest.TestCase):
         seal_manifest(dest, dict(region=job["region"], team_commit=job["sha"], run_id=payload["run_id"],
                                  bundle_revision=payload["revision"], artifacts=artifacts))
         return {"v21": payload}
+
+    @staticmethod
+    def seal_replay_without_comparison(bundle):
+        from nicegui_dashboard.team_baseline_record import nominal_bundle
+        nominal = nominal_bundle(bundle)
+        nominal.mkdir(parents=True)
+        manifest = json.loads((bundle / "manifest.json").read_bytes())
+        arm = dict(region=manifest["region"], team_commit=manifest["team_commit"],
+                   run_id=nominal.parent.name, bundle_revision=nominal.name)
+        for name in ("data.sqlite","scene.json"):
+            (nominal/name).write_bytes((bundle/name).read_bytes())
+        seal_manifest(nominal, dict(arm, artifacts=manifest["artifacts"]))
+        # Legacy comparisons remain reusable without separate evaluation or radio supplements.
+        seal_manifest(bundle, dict(manifest, adapter_id="team-halfsec"))
+        return {"nominal":arm, "applied":{"region":manifest["region"], "team_commit":manifest["team_commit"]}}
 
     def test_source_sync_during_batch_then_selected_upgrade_failure_and_retry(self):
         second = self.commit("B")  # upstream changed; dashboard checkout still points to A
@@ -164,15 +179,16 @@ class TeamUpdateTests(unittest.TestCase):
         original = mgr.current("one")
         pin = original["flights"]["v21"]
         bundle = mgr.output_root / "bundles" / pin["run_id"] / pin["revision"]
-        manifest = json.loads((bundle / "manifest.json").read_bytes())
-        seal_manifest(bundle, dict(manifest, adapter_id="team-halfsec"))
+        measured = self.seal_replay_without_comparison(bundle)
         with patch("nicegui_dashboard.team_update.load_comparison", return_value=None):
             mgr.start("one", self.first)
         self.assertEqual(mgr.batch()["queued"], 1)
         with (patch.object(mgr, "_run_recorder") as recorder,
-              patch("nicegui_dashboard.team_update.load_comparison", side_effect=[None, {"nominal": {}, "applied": {}},
-                                                                                 {"nominal": {}, "applied": {}}])):
+              patch("nicegui_dashboard.team_update.load_comparison", side_effect=[None, measured, measured])):
             mgr.run_worker()
+            recorder.assert_called_once()
+            self.assertEqual(recorder.call_args.args[1][0], "nicegui_dashboard.team_baseline")
+            self.assertIn("--with-replay", recorder.call_args.args[1])
             self.assertEqual(recorder.call_args.args[1][-2:], [pin["run_id"], pin["revision"]])
             mgr.start("one", self.first)
         self.assertEqual(mgr.batch()["completed"], 1)
@@ -186,13 +202,12 @@ class TeamUpdateTests(unittest.TestCase):
             mgr.run_worker()
         pin = mgr.current("one")["flights"]["v21"]
         bundle = mgr.output_root / "bundles" / pin["run_id"] / pin["revision"]
-        seal_manifest(bundle, dict(json.loads((bundle / "manifest.json").read_bytes()), adapter_id="team-halfsec"))
+        measured = self.seal_replay_without_comparison(bundle)
         with patch("nicegui_dashboard.team_update.load_comparison", return_value=None):
             mgr.start_many(["one", "two"], self.first)
         record = comparison_path(bundle)
         record.parent.mkdir(parents=True)
         record.write_text("{}")
-        measured = {"applied": {"region": "one", "team_commit": self.first}}
         with patch("nicegui_dashboard.team_update.load_comparison", return_value=measured):
             self.assertEqual(mgr.batch()["completed"], 1)
             self.assertEqual(mgr.batch()["queued"], 1)
@@ -255,7 +270,7 @@ class TeamUpdateTests(unittest.TestCase):
         mgr.start("one", second)
         with patch.object(mgr, "_capture", side_effect=self.fake_record):
             mgr.run_worker()
-        bundle = mgr.output_root / "bundles/run-one/test-B"
+        bundle = mgr.output_root / "bundles/team-one/test-B"
         manifest = json.loads((bundle / "manifest.json").read_bytes())
         (bundle / "manifest.json").write_text("{}")
         self.assertEqual(mgr.current("one")["sha"], self.first)

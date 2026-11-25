@@ -3,6 +3,7 @@
 Invoked in an isolated simulator interpreter, never in the NiceGUI server.
 """
 import argparse
+from contextlib import nullcontext
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -17,6 +18,7 @@ from functools import partial
 from unittest.mock import patch
 
 from .team_demo import demo_survey, demo_survey_supported, needs_demo, resolve_demo_scene, study_roles
+from .team_telemetry import NativeChannels
 
 
 def utc():
@@ -54,6 +56,7 @@ class FlightMeasurements:
         self.beacons = []
         self.counters = []
         self.forecast_frames = []
+        self.channels = NativeChannels()
         self.onset_probabilities = []
         self.frame = 0
         self.last_report = time.monotonic()
@@ -92,6 +95,8 @@ class FlightMeasurements:
         def interval_and_record(*args):
             result = interval(*args)
             self.frame += 1
+            if hasattr(packet, "attempts"):
+                self.channels.packets(packet, self.frame)
             if self.frame % 5 == 0:
                 self.counters.append((int(packet.ic[0]), int(packet.ic[1]), int(packet.ic[8])))
             if self.frame % 600 == 0 and time.monotonic() - self.last_report >= 20:
@@ -104,7 +109,9 @@ class FlightMeasurements:
         return packet
 
 
-def capture(code, core, spec, commit, max_seconds=None, *, nominal=False):
+def capture(code, core, spec, commit, max_seconds=None, *, nominal=False, include_evaluation=True):
+    from .team_runtime import native_path
+    code = native_path(code)
     prepared = json.loads((code.parent / "snapshot.json").read_text(encoding="utf-8"))
     if prepared.get("sha") != commit or Path(prepared.get("release_root", "")).resolve() != core.resolve():
         raise ValueError("준비된 팀 커밋·연구 자료가 선택한 실행과 일치하지 않습니다.")
@@ -135,7 +142,10 @@ def capture(code, core, spec, commit, max_seconds=None, *, nominal=False):
 
         probes = FlightMeasurements()
         context_data = {}
-        team_flight = release.MainFlight
+        from .team_entry import planned_map, selected_entry
+        entrypoint, flight_class, controller = selected_entry(fly, release, MODE)
+        planned = entrypoint is not release
+        team_flight = getattr(entrypoint, flight_class)
         catalog = json.loads((core / "dashboard_execution/selected_maps.json").read_text(encoding="utf-8"))
         selected = [card for card in catalog["maps"] if card["key"] == spec["region"]]
         if len(selected) != 1:
@@ -146,10 +156,17 @@ def capture(code, core, spec, commit, max_seconds=None, *, nominal=False):
 
         class RecordedFlight(team_flight):
             def run(self, *args, **kwargs):
-                with self.model.fleet.register_forward_hook(probes.observe_fleet_head):
+                with (self.model.fleet.register_forward_hook(probes.observe_fleet_head),
+                      probes.channels.observe(runner,self.model)):
                     return super().run(*args, **kwargs)
 
             def survey(self, region, direction):
+                if planned:
+                    data = super().survey(region, direction)
+                    if data[0].sha256 != card["sha256"]:
+                        raise ValueError("비행 전 배치와 재생 지도의 원본이 다릅니다.")
+                    context_data["altitude"] = float(data[1].altitude_m)
+                    return data
                 # The team release may switch between two independently hashed registries.
                 entry = context.registry().get(region)
                 if region != card["key"] or (entry is not None and entry["sha256"] != card["sha256"]):
@@ -194,13 +211,13 @@ def capture(code, core, spec, commit, max_seconds=None, *, nominal=False):
 
         # Dispatch through the team's actual default. A changed, unsupported
         # default must not silently display an older model under a new commit.
-        native_run = release.run
+        native_run = entrypoint.run
         parse_args = argparse.ArgumentParser.parse_args
         captured = []
 
         def verify_controller(parser, *args, **kwargs):
             parsed = parse_args(parser, *args, **kwargs)
-            if getattr(parsed, "controller", None) != MODE:
+            if getattr(parsed, "controller", None) != controller:
                 raise ValueError("새 팀 버전의 기본 제어기가 변경되어 기록 형식을 확인해야 합니다.")
             return parsed
 
@@ -214,9 +231,11 @@ def capture(code, core, spec, commit, max_seconds=None, *, nominal=False):
         if max_seconds is not None:
             argv.extend(["--steps", str(int(max_seconds / DECISION_S))])
         started = utc()
-        with (patch.object(release, "MainFlight", flight_type), patch.object(sys, "argv", argv),
+        scene_scope = planned_map(entrypoint, context, spec, core, card, nominal) if planned else nullcontext({})
+        with (scene_scope as scene_info, patch.object(entrypoint, flight_class, flight_type), patch.object(sys, "argv", argv),
               patch.object(argparse.ArgumentParser, "parse_args", verify_controller),
-              patch.object(release, "run", record_native_run)):
+              patch.object(entrypoint, "run", record_native_run)):
+            context_data.update(scene_info)
             fly.main()
         completed = utc()
         if len(captured) != 1:
@@ -225,7 +244,7 @@ def capture(code, core, spec, commit, max_seconds=None, *, nominal=False):
         count = len(frames["network"])
         if (count != len(probes.counters) or not math.isclose(row["duration_s"], .5 * count)
                 or probes.frame != 5 * count or row["plan_ticks"] != count
-                or row["decision_interval_s"] != DECISION_S or row["controller"] != MODE
+                or row["decision_interval_s"] != DECISION_S or row["controller"] != controller
                 or not row["safety_passed"] or not row["packet_conserved"]):
             raise ValueError("팀 비행 기록 시각, 제어기 또는 물리·패킷 검사 결과가 일치하지 않습니다.")
         if (len(frames["plan_frames"]) != len(frames["scores"]) or len(frames["support_counts"]) != len(frames["scores"])
@@ -234,11 +253,15 @@ def capture(code, core, spec, commit, max_seconds=None, *, nominal=False):
         final, _ = context_data["nav"].motion.positions()
         archive = {k:frames[k] for k in ("network", "links", "positions", "margin_db", "applied_offsets",
                                           "plan_frames", "scores", "support_counts")}
+        if planned:
+            archive["altitudes"] = frames["altitudes"]
+            row["checkpoint_controller"] = MODE
         archive.update(final_positions=np.array(final, copy=True), offset_xy_m=np.array(OFFSETS, copy=True),
                        fleet_onset_probability=np.asarray(probes.onset_probabilities, dtype=np.float32),
                        packet_counters=np.asarray(probes.counters, dtype=np.int64),
                        beacon_rx=np.asarray(probes.beacons, dtype=float).reshape(-1, 5))
         packet = context_data["packets"]
+        archive.update(probes.channels.arrays(frames, row["search_drones"], row["total_drones"]))
         if not packet.finished or packet.known.shape != (row["search_drones"], packet.visible.shape[1]):
             raise ValueError("팀 패킷 종료 정산과 수색기의 목표 셀 지식을 확인할 수 없습니다.")
         row.update(shared_cells=int(np.all(packet.known, axis=0).sum()), target_cells=packet.known.shape[1])
@@ -251,8 +274,14 @@ def capture(code, core, spec, commit, max_seconds=None, *, nominal=False):
                    full_mission_budget_s=MAX_MISSION, max_seconds_requested=max_seconds,
                    altitude_m=context_data["altitude"], split=context_data["split"],
                    map_input_source=context_data["map_input_source"], source_study_role=context_data["source_study_role"],
-                   map_sha256=context_data["map_sha"], team_capture_version="2",
+                   map_sha256=context_data["map_sha"], team_capture_version="3",
                    model_sha256=release_meta["sha256"], model_threshold=release_meta["threshold"])
+        from .team_analysis import native_diagnoses
+        row["_incident_analysis"] = native_diagnoses(row, archive)
+        if nominal and max_seconds is None and include_evaluation:
+            from .team_evaluation import capture_reference
+            row["_regional_evaluation"] = capture_reference(entrypoint, release, context, core, card, row,
+                                                            context_data["scene"])
         return row, archive, context_data["scene"]
     finally:
         os.chdir(old_cwd)
@@ -277,6 +306,10 @@ def main():
     for key in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
         os.environ[key] = "1"
     spec = dict(region=args.region, seed=args.seed, kind=args.kind, direction=args.direction)
+    # Bind both stages when this job starts. An application update during a
+    # long flight must not change the comparison or publisher used by that job.
+    from .team_bundle import publish_capture
+    from .team_baseline import capture_pair
     print(json.dumps(dict(stage="flight_start", **spec, team_commit=args.commit)), flush=True)
     row, arrays, scene = capture(args.code.resolve(), args.core.resolve(), spec, args.commit, args.max_seconds)
     if args.capture_dir:
@@ -288,8 +321,6 @@ def main():
     if args.max_seconds is not None:
         write_result(args.result, dict(diagnostic=True, duration_s=row["duration_s"], team_commit=args.commit))
         return
-    from .team_bundle import publish_capture
-    from .team_baseline import capture_pair
     baseline = capture_pair(args.code.resolve(), args.core.resolve(), row, arrays)
     pin = publish_capture(row, arrays, scene, args.output_root.resolve(), nominal=baseline)
     write_result(args.result, dict(v21=pin, team_commit=args.commit, region=args.region))

@@ -42,59 +42,92 @@ def store_lock(store, timeout=180):
         time.sleep(.25)
 
 
-def publish(source, store):
-    """Expose the four verified files in one rename. Never register rows directly."""
+def publish_group(sources, store):
+    """Stage, hash-check and budget both arms before making either visible."""
     from dashboard_contract.validation import confined, read_json, sha256, validate_bundle, validate_manifest
+    from dashboard_service.storage_policy import compression_enabled, compress_staged_sqlite
 
     began = time.monotonic()
-    source = Path(source).resolve()
-    manifest = validate_manifest(read_json(confined(source, "manifest.json")))
-    rid, rev = manifest["run_id"], manifest["bundle_revision"]
-    expected_hash = sha256(confined(source, "manifest.json"))
-    if read_json(confined(source, "READY"), 4096).get("manifest_sha256") != expected_hash:
-        raise ValueError("READY and manifest disagree")
-    if source.parent.name != rid or source.name != rev:
-        raise ValueError("The source directory and its immutable identity disagree")
-
+    results = []
     with store_lock(store):
-        target = confined(store.output, Path("bundles") / rid / rev, must_exist=False)
-        if target.exists():
-            validate_bundle(target)
-            if sha256(target / "manifest.json") != expected_hash:
-                raise ValueError("An existing revision has different content")
-            if target != source:
-                validate_bundle(source)
-            outcome = "already_published"
-        else:
-            inputs = [confined(source, name) for name in BUNDLE_FILES]
-            byte_count = sum(path.stat().st_size for path in inputs)
-            if store._output_usage() + byte_count > store.max_output_bytes:
-                raise ValueError("storage_quota_exceeded: completed source retained; retry the same batch")
-            if shutil.disk_usage(store.output).free < byte_count:
-                raise ValueError("insufficient_free_space: completed source retained")
-            staging = confined(store.output, "staging", must_exist=False)
-            staging.mkdir(parents=True, exist_ok=True)
-            # On a handled copy, hash or budget failure only this unpublished copy
-            # is discarded. The committed producer result remains available for retry.
-            with TemporaryDirectory(dir=staging, prefix="handoff-") as private:
-                stage = Path(private)
-                for path in inputs:
-                    shutil.copyfile(path, stage / path.name)
-                validate_bundle(stage)
-                if sha256(stage / "manifest.json") != expected_hash:
-                    raise ValueError("Source revision changed during publication")
-                if store._output_usage() > store.max_output_bytes:
-                    raise ValueError("storage_quota_exceeded: completed source retained")
-                target.parent.mkdir(parents=True, exist_ok=True)
-                os.rename(stage, target)
-                outcome = "published"
-        published_at = utc()
-    result = dict(run_id=rid, revision=rev, outcome=outcome, published_at=published_at,
-                  handoff_s=round(time.monotonic() - began, 3), completed_at=manifest["completed_at"],
-                  exported_at=manifest.get("exported_at"), mission_status=manifest.get("mission_status"),
-                  exporter=manifest.get("exporter_version"))
-    report("bundle_handoff", **result)
-    return result
+        compressed = compression_enabled(store.output)
+        staging = confined(store.output, "staging", must_exist=False)
+        staging.mkdir(parents=True, exist_ok=True)
+        with TemporaryDirectory(dir=staging, prefix="handoff-") as private:
+            pending = []
+            for index, source in enumerate(sources):
+                source = Path(source).resolve()
+                manifest = validate_manifest(read_json(confined(source, "manifest.json")))
+                rid, rev = manifest["run_id"], manifest["bundle_revision"]
+                if (source.parent.name, source.name) != (rid, rev):
+                    raise ValueError("The source directory and its immutable identity disagree")
+                expected_hash = sha256(confined(source, "manifest.json"))
+                if read_json(confined(source, "READY"), 4096).get("manifest_sha256") != expected_hash:
+                    raise ValueError("READY and manifest disagree")
+                target = confined(store.output, Path("bundles") / rid / rev, must_exist=False)
+                extra = "regional_evaluation.json"
+                names = (*BUNDLE_FILES, extra) if extra in manifest["artifacts"] else BUNDLE_FILES
+                if target.exists():
+                    target_manifest = validate_bundle(target)
+                    if sha256(target / "manifest.json") != expected_hash:
+                        raise ValueError("An existing revision has different content")
+                    if target != source:
+                        validate_bundle(source)
+                    _check_reference(target, target_manifest)
+                    outcome = "already_published"
+                else:
+                    inputs = [confined(source, name) for name in names]
+                    byte_count = sum(path.stat().st_size for path in inputs)
+                    if not compressed and store._output_usage() + byte_count > store.max_output_bytes:
+                        raise ValueError("storage_quota_exceeded: insufficient space for the complete flight")
+                    if shutil.disk_usage(store.output).free < byte_count:
+                        raise ValueError("insufficient_free_space: completed source retained")
+                    stage = Path(private) / str(index)
+                    stage.mkdir()
+                    for path in inputs:
+                        shutil.copyfile(path, stage / path.name)
+                    if compressed:
+                        compress_staged_sqlite(stage / "data.sqlite")
+                    staged_manifest = validate_bundle(stage)
+                    _check_reference(stage, staged_manifest)
+                    if sha256(stage / "manifest.json") != expected_hash:
+                        raise ValueError("Source revision changed during publication")
+                    pending.append((stage, target))
+                    outcome = "published"
+                results.append(dict(run_id=rid, revision=rev, outcome=outcome, completed_at=manifest["completed_at"],
+                                    exported_at=manifest.get("exported_at"), mission_status=manifest.get("mission_status"),
+                                    exporter=manifest.get("exporter_version")))
+            if store._output_usage() > store.max_output_bytes and pending:
+                basis = "occupied disk bytes after lossless compression" if compressed else "logical file bytes"
+                raise ValueError(f"storage_quota_exceeded: complete flight group exceeds the quota ({basis}); completed source retained")
+            moved = []
+            try:
+                for stage, target in pending:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    os.rename(stage, target)
+                    moved.append((stage, target))
+            except OSError:
+                for stage, target in reversed(moved):
+                    os.rename(target, stage)
+                raise
+        for result in results:
+            result.update(published_at=utc(), handoff_s=round(time.monotonic()-began, 3))
+            report("bundle_handoff", **result)
+    return results
+
+
+def _check_reference(directory, manifest):
+    from dashboard_contract.validation import confined, sha256
+    name = "regional_evaluation.json"
+    if name in manifest["artifacts"]:
+        artifact = manifest["artifacts"][name]
+        path = confined(directory, name)
+        if path.stat().st_size != artifact["size_bytes"] or sha256(path) != artifact["sha256"]:
+            raise ValueError("지역 평가 파일이 비행의 검사값과 일치하지 않습니다.")
+
+
+def publish(source, store):
+    return publish_group([source], store)[0]
 
 
 def load_store(project, destination, quota_gib):

@@ -134,13 +134,11 @@ async function main() {
     assert.match(await page.locator('#performanceContent').innerText(), /synthetic-halfsec-policy/);
     assert.match(await page.locator('#performanceContent').innerText(), /제어 성능/);
     assert.match(await page.locator('#performanceContent').innerText(), /선행 탐지 성능/);
+    assert.doesNotMatch(await page.locator('#performanceView .panel-footnote').innerText(), /현재 적용한 11월 13일/);
     await page.locator('button[data-uav-tab="map"]').click();
-    await page.locator('#flightNominal').click();
-    await page.waitForFunction(() => {
-      const s = window.uavReplay?.snapshot();
-      return s?.mode === 'nominal' && !s.loading && s.run_id !== 'team-synthetic-browser-flight';
-    });
-    await page.locator('#flightV21').click();
+    // This older result has a paired comparison summary only. Its disabled native
+    // baseline must never open the dashboard archive's unrelated trajectory.
+    assert.equal(await page.locator('#flightNominal').isDisabled(), true);
     await checkTeamReplay(page);
     await page.getByTestId('team-result-choice').click();
     await page.getByRole('option', {name:'기존 대시보드 비행'}).click();
@@ -155,6 +153,12 @@ async function main() {
     await page.waitForFunction(() => document.querySelector('[data-testid=team-run-eligibility]')?.textContent.includes('검증용 배제 지역'));
     assert.equal(await start.isDisabled(), true);
     await cards.locator('button[data-region=bundang]').click();
+    await page.waitForFunction(() => {
+      const s = window.uavReplay?.snapshot();
+      return s?.region === 'bundang' && !s.loading && !s.team_context;
+    });
+    await page.getByTestId('team-result-choice').click();
+    await page.getByRole('option', {name:/팀 aaaaaaa/}).click();
     await checkTeamReplay(page);
 
     const other = await context.newPage();

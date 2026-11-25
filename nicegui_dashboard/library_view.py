@@ -60,6 +60,8 @@ class MapCard:
     evaluation: dict
     team_sha: str = ""
     team_comparison: bool = False
+    nominal_replay: bool = True
+    metric_versions: dict | None = None
 
     @property
     def recall(self):
@@ -186,6 +188,22 @@ def _percent(value):
     return f"{value:.2%}" if value is not None else "미산출"
 
 
+def edition_counts(cards, filters):
+    """Count pairs inside one simulator revision and one definition of the selected metric."""
+    metric = filters["metric"]
+    groups = {}
+    for card in cards:
+        definition = (card.metric_versions or {}).get(metric, "")
+        groups.setdefault((card.team_sha, definition), []).append(card)
+    for (sha, definition), members in groups.items():
+        group = filter_cards(members, **filters)
+        if group.valid or group.missing:
+            label = f"팀 {sha[:7]}" if sha else "기존 비행"
+            if any(other == sha and key != definition for other, key in groups):
+                label += f" · 지표 정의 {definition[:8] or '미확인'}"
+            yield label, group
+
+
 class LibraryView:
     def __init__(self, catalog: dict, *, on_select: SelectFlight, on_open: SelectFlight, source: str):
         self.on_select = on_select
@@ -262,7 +280,7 @@ class LibraryView:
         return self.selected
 
     def show_team_results(self, records):
-        """Use published metrics; keep archive pins for navigation to the original."""
+        """Render exactly the edition chosen for each region, using stable card navigation keys."""
         cards = []
         for card in self.archived:
             record = records.get(card.region)
@@ -272,9 +290,12 @@ class LibraryView:
             flights = dict(card.flights)
             flights["v21"] = replace(flights["v21"], metrics=record["metrics"])
             paired = "nominal" in flights and "nominal" in record
-            if paired:
-                flights["nominal"] = replace(flights["nominal"], metrics=record["nominal"])
-            cards.append(replace(card, flights=flights, evaluation={}, team_sha=record["sha"], team_comparison=paired))
+            if "nominal" in flights:
+                flights["nominal"] = replace(flights["nominal"], metrics=record.get("nominal", {}))
+            cards.append(replace(card, flights=flights, evaluation=record.get("evaluation", {}),
+                                 team_sha=record["sha"], team_comparison=paired,
+                                 nominal_replay=record.get("nominal_replay", False),
+                                 metric_versions=record.get("metric_versions", {})))
         if cards != self.cards:
             self.cards = cards
             self.by_flight = {flight.key: card for card in cards for flight in card.flights.values()}
@@ -309,18 +330,20 @@ class LibraryView:
 
     def _render(self):
         mode, metric, order = self.mode.value, self.metric.value, self.sort.value
-        result = filter_cards(self.cards, mode=mode, province=self.province.value,
-                              district=self.district.value, search=self.search.value or "", metric=metric, order=order)
+        filters = dict(mode=mode, province=self.province.value, district=self.district.value,
+                       search=self.search.value or "", metric=metric, order=order)
+        result = filter_cards(self.cards, **filters)
         self.count.set_text(f"표시 지도 {len(result.visible)}개 / 전체 {len(self.cards)}개")
         self.summary.clear()
         if metric:
             with self.summary:
-                ui.label(f"{METRICS[metric]} 95% 이하 · 같은 조건 비교 가능 {result.valid}개")
-                ui.label(f"미적용 {result.counts['nominal']}곳 → 적용 {result.counts['v21']}곳").classes("font-semibold")
-                with ui.expansion("기준선을 넘은 지역과 결측").props("dense").classes("w-full"):
-                    for title, names in (("95% 초과로 올라감",result.above),("95% 이하로 내려감",result.below),
-                                         ("같은 조건 비교에서 제외",result.missing)):
-                        ui.label(f"{title} · {', '.join(names) or '없음'}")
+                for version, group in edition_counts(self.cards, filters):
+                    ui.label(f"{version} · {METRICS[metric]} 95% 이하 · 같은 조건 비교 가능 {group.valid}개")
+                    ui.label(f"미적용 {group.counts['nominal']}곳 → 적용 {group.counts['v21']}곳").classes("font-semibold")
+                    with ui.expansion("기준선을 넘은 지역과 결측").props("dense").classes("w-full"):
+                        for title, names in (("95% 초과로 올라감",group.above),("95% 이하로 내려감",group.below),
+                                             ("같은 조건 비교에서 제외",group.missing)):
+                            ui.label(f"{title} · {', '.join(names) or '없음'}")
         self.listing.clear()
         self.buttons = {}
         with self.listing:
@@ -335,8 +358,9 @@ class LibraryView:
                     ui.label(card.label).classes("font-bold leading-tight")
                     ui.label(f"{card.province} · {card.district}").classes("text-xs text-slate-600")
                     if card.team_sha:
-                        description = (f"팀 실행 · {card.team_sha[:7]}" if mode == "v21" else
-                                       f"기본 대형 비교 · {card.team_sha[:7]}" if card.team_comparison else "기본 대형 · 기존 기록")
+                        description = ("팀 실행" if mode == "v21" else "기본 대형") + f" · {card.team_sha[:7]}"
+                        if mode == "nominal" and not card.nominal_replay:
+                            description += " · 재생 기록 없음"
                         ui.label(description).classes("text-xs font-semibold")
                     if card.evaluation:
                         n = card.evaluation.get("events")

@@ -10,6 +10,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import zlib
 
 from result_service.dashboard_contract.validation import confined, read_json, validate_bundle
 from .team_bundle import digest, make_scene, totals, validate_capture, write_database
@@ -27,21 +28,45 @@ def compare_recordings(original_db, replay_db):
     # SQLite page layouts cannot masquerade as a difference in flight behaviour.
     with (closing(sqlite3.connect(original_db.resolve().as_uri() + "?mode=ro&immutable=1", uri=True)) as old,
           closing(sqlite3.connect(replay_db.resolve().as_uri() + "?mode=ro&immutable=1", uri=True)) as new):
+        observation_columns = ("time_s", "observer", "peer", "payload")
+        for db in (old, new):
+            names = tuple(row[1] for row in db.execute("PRAGMA table_xinfo(observations)"))
+            if names not in (observation_columns, observation_columns + ("field_mask", "scalars", "original")):
+                raise ValueError("원 비행의 observations 기록 형식을 확인할 수 없습니다.")
         for table in TABLES:
             order = "time_s, observer, peer" if table == "observations" else "1"
-            query = f"SELECT * FROM {table} ORDER BY {order}"
+            columns = "time_s,observer,peer,payload" if table == "observations" else "*"
+            query = f"SELECT {columns} FROM {table} ORDER BY {order}"
             a, b = old.execute(query), new.execute(query)
             while True:
                 left, right = a.fetchmany(256), b.fetchmany(256)
                 if left != right:
-                    raise ValueError(f"원 비행의 {table} 기록과 일치하지 않아 예측값을 연결하지 않았습니다.")
+                    # Only compact observations use text. The historic binary
+                    # path continues to require its original byte-for-byte match.
+                    if table != "observations" or len(left) != len(right) or not all(
+                        _same_observation(x, y) for x,y in zip(left, right)
+                    ):
+                        raise ValueError(f"원 비행의 {table} 기록과 일치하지 않아 예측값을 연결하지 않았습니다.")
                 if not left:
                     break
 
 
+def _same_observation(left, right):
+    if left == right:
+        return True
+    if left[:3] != right[:3] or not any(isinstance(row[3], str) for row in (left, right)):
+        return False
+    raw = [row[3] if isinstance(row[3], str) else zlib.decompress(row[3]).decode() for row in (left, right)]
+    if raw[0] == raw[1]:
+        return True
+    # Dictionary order carries no research meaning. Compare exact JSON scalars,
+    # retaining masks, nulls, types, timestamps, and signed zeros.
+    return json.dumps(json.loads(raw[0]), sort_keys=True) == json.dumps(json.loads(raw[1]), sort_keys=True)
+
+
 def recover_payload(bundle, manifest, row, arrays, scene):
     outages = validate_capture(row, arrays)
-    if row.get("team_capture_version") != "2" or HEAD not in arrays:
+    if row.get("team_capture_version") not in {"2","3"} or HEAD not in arrays:
         raise ValueError("편대 모델의 원래 단절 예측 출력이 없습니다.")
     fleet = [dict(id=f"uav-{i}", role="search" if i < row["search_drones"] else "relay")
              for i in range(row["total_drones"])]
@@ -56,8 +81,9 @@ def recover_payload(bundle, manifest, row, arrays, scene):
 
     with tempfile.TemporaryDirectory(prefix="uav-flight-forecast-") as temporary:
         replay_db = Path(temporary) / "data.sqlite"
-        prior_channels = {k: v for k, v in arrays.items() if k != HEAD}
-        write_database(replay_db, row, prior_channels, fleet, outages, manifest["metric_definitions"])
+        from .team_telemetry import legacy_capture_view
+        prior_row,prior_channels = legacy_capture_view(row,arrays,False)
+        write_database(replay_db, prior_row, prior_channels, fleet, outages, manifest["metric_definitions"])
         compare_recordings(bundle / "data.sqlite", replay_db)
 
     network = arrays["network"]

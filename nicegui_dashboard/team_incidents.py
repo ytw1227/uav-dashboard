@@ -10,7 +10,7 @@ import zlib
 
 def incident_descriptor(manifest, events):
     pin = manifest["run_id"] + "/" + manifest["bundle_revision"]
-    return {"region": manifest["region"], "mode": "v21", "revision": manifest["bundle_revision"],
+    return {"region": manifest["region"], "mode": flight_mode(manifest), "revision": manifest["bundle_revision"],
             "events_chunk": "team-book/" + pin, "analysis_chunk": "team-analysis/" + pin}
 
 
@@ -53,17 +53,24 @@ def _action(db, request, receipts, step, duration):
     # The network delivers a command after publication. Match that publication
     # and the commanded relay/vector; another command in the same outage may differ.
     receipt = receipts.get((relay, detail.get("published_s")))
-    if not receipt or receipt["offset_xy_m"] != command:
+    if not receipt or receipt["start_s"] < start or receipt["offset_xy_m"] != command:
         return action
     arrival = receipt["start_s"]
     action.update(command_received=True, delivered_at_s=arrival, applied_correction=command)
-    end = (math.floor(arrival / step) + 1) * step
+    # A bracket spanning reception can contain movement from the previous
+    # command. Compare two complete saved positions after delivery.
+    motion_start = math.ceil((arrival - 1e-8) / step) * step
+    end = motion_start + step
     if end > duration:
         return action
-    first, last = _position(db, start, relay), _position(db, end, relay)
+    if any(other["related_uav_ids"][0] == relay and arrival < other["start_s"] < end
+           for other in receipts.values()):
+        return action
+    first, last = _position(db, motion_start, relay), _position(db, end, relay)
     if first and last:
         delta = [last[k] - first[k] for k in ("x", "y")]
-        action.update(actual_delta=delta, moved_m=math.hypot(*delta), outcome_available_s=end)
+        action.update(actual_delta=delta, moved_m=math.hypot(*delta), motion_start_s=motion_start, outcome_available_s=end,
+                      realized_endpoint=[last["x"],last["y"]], offset_receipt_and_motion=True)
     return action
 
 
@@ -85,11 +92,17 @@ def _case(db, event, manifest, all_outages, actions):
     broken = sorted(_edges(_frame(db, start - step)) - _edges(first))
     crossing = [(a, b) for a, b in broken if membership[a] != membership[b]]
     during = [a for a in actions if start <= a["time_s"] < end]
+    chosen = {a["time_s"]:a for a in during}
     prior = [a for a in actions if left <= a["time_s"] < start]
     decisions = []
     for (blob,) in db.execute("SELECT payload FROM decisions WHERE time_s>=? AND time_s<? ORDER BY time_s", (start, end)):
         d = _payload(blob)
-        decisions.append({"time_s": d["decision_time_s"], "early_score": d.get("fleet_score")})
+        time = d["decision_time_s"]
+        dec = dict(time_s=time,early_score=d.get("fleet_score"),threshold=manifest.get("model_threshold"))
+        if time in chosen:
+            # Reuse only the recorded action classification; no inference about the cause.
+            dec["reason"] = {"prevention":"added_prevention","recovery":"team_recovery"}.get(chosen[time]["reason"])
+        decisions.append(dec)
     focus = during[0]["relay"] if during else next((u for pair in crossing for u in pair if u in relays), None)
     pair = {"observer": crossing[0][0], "peer": crossing[0][1]} if crossing else None
     return {**event, "window": [left, right], "confirmation_s": start + 1,
@@ -109,17 +122,17 @@ def _book(root, rid, revision, signature):
     with closing(sqlite3.connect(uri, uri=True)) as db:
         rows = [_payload(blob) for (blob,) in db.execute("SELECT payload FROM events ORDER BY start_s,event_id")]
         receipts = {(e["related_uav_ids"][0], e["source_command_s"]): e for e in rows if e["type"] == "applied_command"}
-        actions = [_action(db, e, receipts, manifest["clocks"]["rf_dt_s"], manifest["simulation_end_s"])
-                   for e in rows if e["type"] == "intervention"]
+        actions = [dict(_action(db,e,receipts,manifest["clocks"]["rf_dt_s"],manifest["simulation_end_s"]),
+                        threshold=manifest.get("model_threshold")) for e in rows if e["type"] == "intervention"]
         outages = [e for e in rows if e["type"] == "search_outage"]
         cases = [_case(db, e, manifest, outages, actions) for e in rows if e["type"] == "persistent_search_outage"]
-    return {"run_id": rid, "revision": revision, "region": manifest["region"], "mode": "v21", "events": cases}
+    return {"run_id": rid, "revision": revision, "region": manifest["region"], "mode": flight_mode(manifest), "events": cases}
 
 
 def read_incident(root, manifest, event_id, events):
     if event_id == "analysis":
-        # These recordings have no replay of counterfactual radio propagation.
-        return {}
+        from .team_analysis import read_analysis
+        return read_analysis(Path(root), manifest)
     book = _book(Path(root), manifest["run_id"], manifest["bundle_revision"], manifest["artifacts"]["data.sqlite"]["sha256"])
     if event_id == "book":
         return book
@@ -127,3 +140,49 @@ def read_incident(root, manifest, event_id, events):
         if case["id"] == event_id:
             return case
     raise KeyError(event_id)
+
+
+def flight_mode(manifest):
+    return "nominal" if manifest.get("mode") == "nominal" else "v21"
+
+
+def timeline_events(db, rows):
+    """Join published request, actual offset receipt and measured interval by their native clocks."""
+    from collections import defaultdict
+    by_relay = defaultdict(list)
+    receipts = {}
+    for e in rows:
+        if e["type"] == "applied_command":
+            relay = e["related_uav_ids"][0]
+            by_relay[relay].append(e)
+            receipts[relay,e["source_command_s"]] = e
+    if not by_relay and not any(e["type"] == "intervention" for e in rows):
+        return rows
+    duration = db.execute("SELECT MAX(time_s) FROM rf_frames").fetchone()[0]
+    frame = db.execute("SELECT interval_end_s - interval_start_s FROM rf_frames ORDER BY time_s LIMIT 1").fetchone()
+    if not duration or not frame:
+        return rows
+    for e in rows:
+        if e["type"] != "intervention":
+            continue
+        action = _action(db,e,receipts,frame[0],duration)
+        e.update(team_receipt_clock=True, **{k:action[k] for k in
+            ("actual_pre_action_connected","actual_search_connected_at_command","command_received",
+             "delivered_at_s","realized_endpoint","outcome_available_s","early_score") if k in action})
+    for relay,changes in by_relay.items():
+        start = None
+        def interval(stop, open_end):
+            return dict(id="relocation-"+start["id"], type="relocation", start_s=start["start_s"],end_s=stop,
+                duration_s=stop-start["start_s"],temporal_kind="interval",scope="relay",related_uav_ids=[relay],
+                definition_id="nonzero_applied_offset",derived=True,source_refs=["applied_command"],
+                left_censored=start["start_s"]==0,right_censored=open_end,actual_movement_is_separate=True)
+        for change in sorted(changes,key=lambda e:e["start_s"]):
+            if any(change["offset_xy_m"]):
+                if start is None:
+                    start = change
+            elif start is not None:
+                rows.append(interval(change["start_s"], False))
+                start = None
+        if start is not None and start["start_s"] < duration:
+            rows.append(interval(duration, True))
+    return sorted(rows, key=lambda event: (event["start_s"], event["id"]))

@@ -10,21 +10,25 @@ import sqlite3
 import tempfile
 import zlib
 
-from .ingest import load_store, publish
+from .ingest import load_store, publish, publish_group
 from .managed_service import SERVICE_PROJECT
 from .team_forecast_record import FLEET_FORECAST_HEAD
 from .team_model import verified_profile
 
 
-SCHEMA = """
-CREATE TABLE positions(time_s REAL PRIMARY KEY, payload BLOB NOT NULL);
-CREATE TABLE rf_frames(time_s REAL PRIMARY KEY, interval_start_s REAL, interval_end_s REAL, payload BLOB NOT NULL);
+LEGACY_OBSERVATIONS = """
 CREATE TABLE observations(time_s REAL, observer TEXT, peer TEXT, payload BLOB NOT NULL, PRIMARY KEY(time_s,observer,peer));
 CREATE INDEX observations_pair_time ON observations(observer,peer,time_s);
+"""
+CHANNEL_SCHEMA = """
+CREATE TABLE positions(time_s REAL PRIMARY KEY, payload BLOB NOT NULL);
+CREATE TABLE rf_frames(time_s REAL PRIMARY KEY, interval_start_s REAL, interval_end_s REAL, payload BLOB NOT NULL);
 CREATE TABLE decisions(time_s REAL PRIMARY KEY, payload BLOB NOT NULL);
 CREATE TABLE events(event_id TEXT PRIMARY KEY, start_s REAL, end_s REAL, type TEXT, payload BLOB NOT NULL);
 CREATE TABLE metrics(metric_id TEXT PRIMARY KEY, payload TEXT NOT NULL);
 """
+# Existing callers use this complete schema to construct compatible replay fixtures.
+SCHEMA = CHANNEL_SCHEMA + LEGACY_OBSERVATIONS
 
 
 def encode(value):
@@ -113,6 +117,12 @@ def validate_capture(row, arrays):
         raise ValueError("비행 시간 또는 기체 구성이 실제 기록과 다릅니다.")
     shapes = dict(positions=(steps, n, 2), final_positions=(n, 2), links=(steps, n, n),
                   margin_db=(steps,), network=(steps,), packet_counters=(steps, 3), applied_offsets=(steps, n-ns))
+    if "altitudes" in arrays or "end_altitudes_m" in row:
+        shapes["altitudes"] = (steps, n)
+        final_height = np.asarray(row.get("end_altitudes_m"))
+        if (final_height.shape != (n,) or not np.issubdtype(final_height.dtype, np.number)
+                or not np.isfinite(final_height).all() or "altitudes" not in arrays):
+            raise ValueError("기체별 높이 기록과 마지막 위치의 높이가 일치하지 않습니다.")
     for key, shape in shapes.items():
         if arrays[key].shape != shape or not np.isfinite(arrays[key]).all():
             raise ValueError(f"재생에 필요한 팀 기록의 형식이 다릅니다: {key}")
@@ -150,23 +160,32 @@ def validate_capture(row, arrays):
     return outages
 
 
-def write_database(path, row, arrays, fleet, outages, definitions):
+def write_database(path, row, arrays, fleet, outages, definitions, *, compact_observations=False):
+    from base64 import b64encode
+    from .team_telemetry import radio_rows
+    from .team_observation_storage import observation_schema, storage_row
     ids = [u["id"] for u in fleet]
     ns = row["search_drones"]
     positions, last = arrays["positions"], arrays["final_positions"]
     score_at = {int(t): (float(s), int(n)) for t,s,n in
                 zip(arrays["plan_frames"], arrays["scores"], arrays["support_counts"])}
     onset_at = dict(zip(arrays["plan_frames"], arrays.get("fleet_onset_probability", ())))
+    pair_at = dict(zip(arrays["plan_frames"], arrays.get("pair_probabilities", ())))
     requests = {e["time_s"]: e for e in row["events"]}
     with closing(sqlite3.connect(path)) as db, db:
-        db.executescript(SCHEMA)
-        def add_position(t, xy):
-            uavs = [dict(u, x=float(point[0]), y=float(point[1]), z=row["altitude_m"]) for u,point in zip(fleet, xy)]
+        db.executescript(CHANNEL_SCHEMA)
+        db.executescript(observation_schema() if compact_observations else LEGACY_OBSERVATIONS)
+        if "_incident_analysis" in row:
+            db.execute("CREATE TABLE incident_analysis(time_s REAL PRIMARY KEY, payload BLOB NOT NULL)")
+            db.executemany("INSERT INTO incident_analysis VALUES(?,?)",
+                           ((float(t), packed(analysis)) for t,analysis in row["_incident_analysis"].items()))
+        def add_position(t, xy, altitudes):
+            uavs = [dict(u, x=float(point[0]), y=float(point[1]), z=float(height)) for u,point,height in zip(fleet,xy,altitudes)]
             db.execute("INSERT INTO positions VALUES(?,?)", (t, packed(dict(sample_time_s=t, available_at_s=t, uavs=uavs))))
 
         for k, xy in enumerate(positions):
             start, end = k*.5, (k+1)*.5
-            add_position(start, xy)
+            add_position(start, xy, arrays["altitudes"][k] if "altitudes" in arrays else [row["altitude_m"]]*len(ids))
             graph = arrays["links"][k]
             parts = components(graph, ids)
             reach = [[u for u in group if u in ids[:ns]] for group in parts]
@@ -182,6 +201,12 @@ def write_database(path, row, arrays, fleet, outages, definitions):
                      for i in range(len(ids)) for j in range(i+1, len(ids))]
             frame = dict(interval_start_s=start, interval_end_s=end, available_at_s=end, graph_available_at_s=start,
                          links=links, components=parts, metrics=metrics)
+            if "shared_counts" in arrays:
+                metrics["information_shared_fraction"] = int(arrays["shared_counts"][k]) / row["target_cells"] if row["target_cells"] else None
+            if "display_margin" in arrays:
+                frame["display_margin"] = dict(value=float(arrays["display_margin"][k]),
+                    edge=arrays["margin_edge"][k].tolist(), pair=arrays["margin_pair"][k].tolist(),
+                    path=[int(i) for i in arrays["margin_path"][k] if i >= 0])
             db.execute("INSERT INTO rf_frames VALUES(?,?,?,?)", (end, start, end, packed(frame)))
             nxt = positions[k+1] if k+1 < len(positions) else last
             request = requests.get(start)
@@ -194,19 +219,23 @@ def write_database(path, row, arrays, fleet, outages, definitions):
                                     actual_displacement=(nxt[i]-xy[i]).tolist(), actual_available_at_s=end, unit="m"))
             score, support = score_at.get(k, (None, 0))
             decision = dict(decision_time_s=start, available_at_s=start, actions=actions, predictions=[],
-                            fleet_score=score if support>0 else None, support_count=support)
+                            fleet_score=score if support or row["team_capture_version"]=="3" else None, support_count=support)
+            if k in pair_at:
+                decision["pair_f32le"] = b64encode(pair_at[k].astype("<f4",copy=False).tobytes()).decode("ascii")
             if "fleet_onset_probability" in arrays:
                 decision["fleet_onset_probability"] = float(onset_at[k]) if support > 0 else None
                 decision["pre_action_connected"] = bool(arrays["network"][k-1]) if k else None
             db.execute("INSERT INTO decisions VALUES(?,?)", (start, packed(decision)))
-        add_position(row["duration_s"], last)
+        final_heights = row.get("end_altitudes_m", [row["altitude_m"]]*len(ids))
+        add_position(row["duration_s"], last, final_heights)
 
-        for t, sender, receiver, power, sinr in arrays["beacon_rx"]:
-            observer, peer = ids[int(receiver)], ids[int(sender)]
-            values = dict(beacon_sinr_db=float(sinr), beacon_rx_power_dbm=float(power))
-            obs = dict(observed_at_s=t, available_at_s=t, observer_id=observer, peer_id=peer,
-                       values=values, valid=dict.fromkeys(values,True), ages=dict.fromkeys(values,0.0))
-            db.execute("INSERT INTO observations VALUES(?,?,?,?)", (float(t),observer,peer,packed(obs)))
+        observations = radio_rows(arrays,ids)
+        if compact_observations:
+            db.executemany("INSERT INTO observations(time_s,observer,peer,field_mask,scalars,original) VALUES(?,?,?,?,?,?)",
+                           (storage_row(t,a,b,obs,packed) for t,a,b,obs in observations))
+        else:
+            db.executemany("INSERT INTO observations VALUES(?,?,?,?)",
+                           ((t,a,b,packed(obs)) for t,a,b,obs in observations))
 
         def event(typ, a, b, related, index, **detail):
             key = f"{typ}-{index:06d}"
@@ -231,6 +260,34 @@ def write_database(path, row, arrays, fleet, outages, definitions):
                 metric_id=metric_id,key=key,value=value,definition=definitions[key])).decode()))
         return {name: db.execute(f"SELECT COUNT(*) FROM {name}").fetchone()[0]
                 for name in ("positions","rf_frames","decisions","metrics","events","observations")}
+
+
+def write_nominal_bundle(folder, applied, arm, nominal, frames, scene_bytes):
+    """Stage the actual comparator trajectory in the same four-file replay format."""
+    folder.mkdir(parents=True)
+    (folder/"scene.json").write_bytes(scene_bytes)
+    counts = write_database(folder/"data.sqlite", nominal, frames, applied["fleet"],
+                            validate_capture(nominal, frames), applied["metric_definitions"], compact_observations=True)
+    artifacts = {name:dict(sha256=digest(folder/name),size_bytes=(folder/name).stat().st_size)
+                 for name in ("scene.json","data.sqlite")}
+    identity = {**applied["source_identity"], "controller":nominal["controller"],
+                "started_at":nominal["started_at"], "pair_key":arm["pair_key"]}
+    signature = hashlib.sha256(encode(identity)).hexdigest()
+    m = {**applied, **arm, "source_key":"source-"+signature[:28], "source_fingerprint":signature,
+         "source_identity":identity, "started_at":nominal["started_at"], "completed_at":nominal["completed_at"],
+         "artifacts":artifacts, "head_definitions":{}, "event_definitions":dict(applied["event_definitions"]),
+         "observation_definitions":dict(applied["observation_definitions"]),
+         "validation_report":{"counts":counts, "safety_passed":nominal["safety_passed"],
+                              "packet_conserved":nominal["packet_conserved"]}}
+    for key in ("flight_comparison", "team_model_profile", "regional_evaluation", "nominal_replay", "bundle_path"):
+        m.pop(key, None)
+    if len(frames.get("fleet_onset_probability", ())):
+        m["head_definitions"]["fleet_onset_probability"] = FLEET_FORECAST_HEAD
+    if nominal.get("team_capture_version") == "3":
+        from .team_telemetry import add_manifest_fields
+        add_manifest_fields(m, frames)
+    (folder/"manifest.json").write_bytes(encode(m))
+    (folder/"READY").write_bytes(encode(dict(manifest_sha256=digest(folder/"manifest.json"))))
 
 
 def publish_capture(record, arrays, scene_path, output_root, *, nominal=None):
@@ -259,10 +316,16 @@ def publish_capture(record, arrays, scene_path, output_root, *, nominal=None):
         revision_inputs.append({"model_threshold": threshold})
     else:
         threshold = None
+    baseline_frames = None
+    if isinstance(nominal, tuple):
+        nominal, baseline_frames = nominal
     if nominal is not None:
-        revision_inputs.append(dict(comparison_schema=1, nominal_metrics=totals(nominal),
+        revision_inputs.append(dict(comparison_schema=2 if baseline_frames is not None else 1, nominal_metrics=totals(nominal),
                                     nominal_cuts=nominal["cuts"], target_cells=record["target_cells"],
                                     shared_cells=[nominal["shared_cells"], record["shared_cells"]]))
+        if baseline_frames is not None and nominal.get("_regional_evaluation") is not None:
+            revision_inputs.append(dict(regional_evaluation_sha256=hashlib.sha256(
+                encode(nominal["_regional_evaluation"])).hexdigest()))
     rid, rev = "team-" + fingerprint[:28], "rev-" + hashlib.sha256(encode(revision_inputs)).hexdigest()[:24]
     fleet = [dict(id=f"uav-{i}", role="search" if i<record["search_drones"] else "relay") for i in range(record["total_drones"])]
     defs = {}
@@ -275,12 +338,13 @@ def publish_capture(record, arrays, scene_path, output_root, *, nominal=None):
         bundle = Path(temp)/rid/rev
         bundle.mkdir(parents=True)
         (bundle/"scene.json").write_bytes(encode(scene))
-        counts = write_database(bundle/"data.sqlite", record, arrays, fleet, outages, defs)
+        counts = write_database(bundle/"data.sqlite", record, arrays, fleet, outages, defs, compact_observations=True)
         artifacts = {name:dict(sha256=digest(bundle/name),size_bytes=(bundle/name).stat().st_size) for name in ("data.sqlite","scene.json")}
         manifest = dict(schema_version="1.0.0",run_id=rid,bundle_revision=rev,adapter_id="team-halfsec",adapter_version="1",
             artifact_kind="episode",research_family="final_v1_halfsec",source_key="source-"+fingerprint[:28],
             source_identity=identity,source_fingerprint=fingerprint,research_version=sha,team_commit=sha,
-            source_refs=[dict(path="final_v1/halfsec_main/release.py",commit=sha)], stage_status="completed",export_status="ready",
+            source_refs=[dict(path="final_v1/halfsec_main/submission.py" if "placement" in record else
+                              "final_v1/halfsec_main/release.py",commit=sha)], stage_status="completed",export_status="ready",
             started_at=record["started_at"],completed_at=record["completed_at"],completion_time_status="recorded",
             model_id=record["controller"],model_sha256=record["model_sha256"],controller=record["controller"],mode="v21_halfsec",
             config_hash=hashlib.sha256(encode([spec,sha,record["model_sha256"]])).hexdigest(),
@@ -304,17 +368,34 @@ def publish_capture(record, arrays, scene_path, output_root, *, nominal=None):
             manifest["model_threshold"] = threshold
         if model_profile:
             manifest["team_model_profile"] = model_profile
-        if "fleet_onset_probability" in arrays:
+        if len(arrays.get("fleet_onset_probability", ())):
             manifest["head_definitions"]["fleet_onset_probability"] = FLEET_FORECAST_HEAD
+        if record.get("team_capture_version") == "3":
+            from .team_telemetry import add_manifest_fields
+            add_manifest_fields(manifest, arrays)
+            manifest["capture_version"] = "3"
+        baseline_bundle = None
         if nominal is not None:
             from .team_baseline import paired_manifests
             manifest["flight_comparison"] = paired_manifests(manifest, record, nominal)
+            if baseline_frames is not None:
+                arm = manifest["flight_comparison"]["nominal"]
+                baseline_bundle = Path(temp)/arm["run_id"]/rev
+                write_nominal_bundle(baseline_bundle, manifest, arm, nominal, baseline_frames,
+                                     (bundle/"scene.json").read_bytes())
+                manifest["nominal_replay"] = {"run_id":arm["run_id"], "revision":rev,
+                                              "manifest_sha256":digest(baseline_bundle/"manifest.json")}
+                if nominal.get("_regional_evaluation") is not None:
+                    from .team_evaluation import store_reference
+                    store_reference(bundle, manifest, nominal)
         (bundle/"manifest.json").write_bytes(encode(manifest))
         (bundle/"READY").write_bytes(encode(dict(manifest_sha256=digest(bundle/"manifest.json"))))
         store = load_store(SERVICE_PROJECT, output_root, quota_gib=quota)
         try:
             from dashboard_contract.validation import validate_bundle
             validate_bundle(bundle)
+            if baseline_bundle is not None:
+                return publish_group([baseline_bundle, bundle], store)[-1]
             return publish(bundle, store)
         finally:
             store.close()

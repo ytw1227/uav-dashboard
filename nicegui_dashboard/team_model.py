@@ -55,7 +55,16 @@ def release_at(source, commit, controller, checkpoint, interval):
         return raw
 
     meta = json.loads(read(RELEASE + "checkpoint.json"))
-    if (meta.get("sha256"), meta.get("controller"), meta.get("decision_interval_s")) != (checkpoint, controller, interval):
+    planned = controller == "halfsec_planned_eight" and RELEASE + "submission.py" in blobs
+    checkpoint_controller = meta.get("controller") if planned else controller
+    if planned:
+        import ast
+        submission = ast.parse(read(RELEASE + "submission.py").decode("utf-8-sig"))
+        uses_release = any(isinstance(node, ast.ImportFrom) and node.module == "release" and node.level == 1
+                           and any(name.name == "load_model" for name in node.names) for node in submission.body)
+        if not uses_release or checkpoint_controller != "v21_transformer_halfsec":
+            raise ValueError("배치 제어기가 사용한 가중치 출처를 확인할 수 없습니다.")
+    if (meta.get("sha256"), meta.get("controller"), meta.get("decision_interval_s")) != (checkpoint, checkpoint_controller, interval):
         raise ValueError("이 비행의 모델 파일·제어기·판단 주기와 팀 배포 정보가 일치하지 않습니다.")
     details = []
     release_note = ""
@@ -67,6 +76,10 @@ def release_at(source, commit, controller, checkpoint, interval):
         section = re.search(r"^## 예측과 재배치[ \t]*\r?\n(.*?)(?=^## |\Z)", notes, re.M | re.S)
         if section:
             details = [line[2:] for line in section[1].splitlines() if line.startswith("- ")]
+        if planned:
+            planning = re.search(r"^## 비행 전 배치와 구간 통과[ \t]*\r?\n(.*?)(?=^## |\Z)", notes, re.M | re.S)
+            if planning:
+                details = [line[2:] for line in planning[1].splitlines() if line.startswith("- ")] + details
     profile = dict(identity=dict(commit=commit, controller=controller, checkpoint=checkpoint, interval=interval),
                    model=measured(meta, ("step", "threshold")), release_note=release_note, notes=details, source_refs=refs,
                    controls={}, forecast={}, status="verified")

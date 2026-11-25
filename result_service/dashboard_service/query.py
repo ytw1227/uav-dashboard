@@ -83,6 +83,8 @@ def compare(registry,selections,metric_ids=None):
     output=[];excluded=[];seen=set();grouped=defaultdict(list)
     conflicts={r["run_id"] for r in registry.list()["runs"] if r.get("conflict")}
     uncertain=[]
+    episodes=[]
+    group_definitions={}
     counts={"selected":len(selections),"included":0,"mission_success":0,"mission_failure":0,
             "process_failure_or_interrupted":0,"data_error":0,"summary_only":0,"duplicate":0,"parent_excluded":0}
     for sel in selections:
@@ -101,20 +103,38 @@ def compare(registry,selections,metric_ids=None):
             counts[key]+=1;excluded.append({"run_id":rid,"reason":m["artifact_kind"]+": no independent validated episode"});continue
         if m.get("stage_status") not in ("completed","complete","succeeded"):
             counts["process_failure_or_interrupted"]+=1;excluded.append({"run_id":rid,"reason":m.get("stage_status")});continue
+        episodes.append((rid,rev,m))
+    # A missing result must not change which definitions identify an experiment.
+    requested = metric_ids or sorted({
+        key for _, _, manifest in episodes for key in manifest.get("metric_definitions", {})
+    } | {
+        key for _, _, manifest in episodes for key in manifest.get("final_metrics", {})
+    })
+    requested = list(dict.fromkeys(k.split(".",1)[1] if k.startswith(("v5.","final-v1.")) else k for k in requested))
+    for rid,rev,m in episodes:
         meta=metadata(m);final=m.get("final_metrics",{})
         mission=m.get("mission_completed",final.get("mission_completed",meta.get("mission_completed")))
         counts["included"]+=1
         if mission is True:counts["mission_success"]+=1
         elif mission is False:counts["mission_failure"]+=1
         definitions=m.get("metric_definitions",{})
-        requested=metric_ids or list(final)
         values={}
+        applicable={}
+        missing_metrics={}
         for key in requested:
-            key=key.split(".",1)[1] if key.startswith(("v5.","final-v1.")) else key
             definition=definitions.get(key)
-            if not definition or not definition.get("comparable",True):continue
+            if not definition:
+                missing_metrics[key]="선택한 비행에 지표 정의가 없습니다."
+                continue
+            if not definition.get("comparable", True):
+                missing_metrics[key]="지표 정의에서 실행 간 비교를 지원하지 않습니다."
+                continue
+            applicable[key]=definition
             value=int(final[key]) if isinstance(final.get(key),bool) and definition.get("unit")=="boolean" else finite_number(final.get(key))
-            if value is None:continue
+            if value is None:
+                missing_metrics[key]=("최종 지표값이 기록되지 않았습니다." if final.get(key) is None
+                                      else "기록된 값이 유효한 수치가 아닙니다.")
+                continue
             values[key]={"value":value,"definition":definition}
         conditions={k:meta.get(k) for k in ("map_hash","region","kind","direction","split","mode","model_id","research_version","config_hash","interference","placement","termination_rule","evaluation_window")}
         # Unknown conditions are shown explicitly. Only known same configuration hashes establish a comparable scope.
@@ -123,30 +143,33 @@ def compare(registry,selections,metric_ids=None):
         if missing:
             conditions["unverified_conditions_run_identity"]=rid
             uncertain.append({"run_id":rid,"missing":missing})
-        definition_signature=digest({k:v["definition"].get("definition_hash",digest(v["definition"])) for k,v in values.items()})
+        signature_definitions={k:definitions[k] for k in requested if definitions.get(k)}
+        definition_signature=digest({k:d.get("definition_hash",digest(d)) for k,d in signature_definitions.items()})
         signature=digest([conditions,definition_signature])
+        group_definitions[signature]=applicable
         row={"run_id":rid,"bundle_revision":rev,"metadata":meta,"metrics":values,
+             "missing_metrics":missing_metrics,
              "definition_signature":definition_signature,"condition_signature":signature,"mission_completed":mission,"mission_status":"completed" if mission is True else "not_completed" if mission is False else "not_assessed",
              "packet_counts":{"generated":final.get("generated_packets"),"delivered":final.get("delivered_packets")}}
         output.append(row);grouped[signature].append(row)
     groups=[]
     for signature,rows in grouped.items():
         stats=[]
-        keys=sorted({k for row in rows for k in row["metrics"]})
-        for key in keys:
+        for key,definition in sorted(group_definitions[signature].items()):
             vals=[r["metrics"][key]["value"] for r in rows if key in r["metrics"]]
-            definition=next(r["metrics"][key]["definition"] for r in rows if key in r["metrics"])
             direction=definition.get("preferred_direction")
-            worst=min(vals) if direction in ("higher","maximize","up") else max(vals) if direction in ("lower","minimize","down") else None
+            lowest=min(vals,default=None)
+            highest=max(vals,default=None)
+            worst=lowest if direction in ("higher","maximize","up") else highest if direction in ("lower","minimize","down") else None
             stats.append({"metric_id":key,"label":definition.get("label",key),"unit":definition.get("unit"),
-              "n":len(vals),"missing":len(rows)-len(vals),"mean":statistics.fmean(vals),
-              "std":statistics.stdev(vals) if len(vals)>1 else None,"min":min(vals),"max":max(vals),
-              "median":statistics.median(vals),"worst":worst,"values":vals,"definition":definition})
+              "selected":len(rows),"n":len(vals),"missing":len(rows)-len(vals),"mean":statistics.fmean(vals) if vals else None,
+              "std":statistics.stdev(vals) if len(vals)>1 else None,"min":lowest,"max":highest,
+              "median":statistics.median(vals) if vals else None,"worst":worst,"values":vals,"definition":definition})
         packet_rows=[r for r in rows if finite_number(r["packet_counts"]["generated"]) is not None and finite_number(r["packet_counts"]["delivered"]) is not None]
         generated=sum(r["packet_counts"]["generated"] for r in packet_rows)
         delivered=sum(r["packet_counts"]["delivered"] for r in packet_rows)
         groups.append({"condition_signature":signature,"definition_signature":rows[0]["definition_signature"],
-          "run_ids":[r["run_id"] for r in rows],"metadata":rows[0]["metadata"],"metrics":stats,
+          "run_ids":[r["run_id"] for r in rows],"selected":len(rows),"metadata":rows[0]["metadata"],"metrics":stats,
           "pooled_pdr":{"value":delivered/generated if generated else None,"generated":generated,"delivered":delivered,
                         "scope":"pooled_packets_within_same_conditions","zero_denominator":generated==0,"n":len(packet_rows),"missing":len(rows)-len(packet_rows)}})
     warnings=[]

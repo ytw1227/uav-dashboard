@@ -5,7 +5,7 @@ import {sameFlightConditions} from './library.js';
 const pinId = /^[a-zA-Z0-9_-]+$/;
 const fields = row => ({...row, ...row?.metadata});
 const revisionOf = row => row?.bundle_revision || row?.revision;
-let archiveRows, active, archivedAPI, archivedChunk;
+let archiveRows, active, archivedAPI, archivedChunk, originalEvaluation;
 
 async function json(path, query='') {
     const response = await fetch(path + query);
@@ -25,14 +25,15 @@ export function installTeamReader(catalog) {
     archivedChunk = window.__DASHBOARD_READ_CHUNK__;
     window.__PORTABLE__ = {...portable, api(url, options) {
         const path = new URL(url, location.origin);
-        const match = path.pathname.match(/^\/api\/runs\/(team-[\w-]+)\/(manifest|events|timeline|scene)$/);
+        const match = path.pathname.match(/^\/api\/runs\/((?:team|nominal)-[\w-]+)\/(manifest|events|timeline|scene)$/);
         if (!match) return archivedAPI(url, options);
         const [, id, part] = match;
         const revision = path.searchParams.get('revision');
-        if (active?.row.run_id !== id || revisionOf(active.row) !== revision)
+        const flight = [active,active?.baseline].find(f=>f?.row.run_id===id && revisionOf(f.row)===revision);
+        if (!flight)
             return Promise.reject(new Error('다른 팀 비행으로 이동했습니다.'));
         const base = root(id, revision);
-        if (part === 'manifest') return Promise.resolve(active.manifest);
+        if (part === 'manifest') return Promise.resolve(flight.manifest);
         if (part === 'timeline') {
             return path.searchParams.get('channels') === 'observations'
                 ? json(base + '/observations', path.search) : json(base + '/overview');
@@ -40,8 +41,10 @@ export function installTeamReader(catalog) {
         return json(base + '/' + part, path.search);
     }};
     window.__DASHBOARD_READ_CHUNK__ = id => {
-        const match = String(id).match(/^team-(book|analysis)\/([\w-]+)\/([\w-]+)$/);
-        return match ? json(root(match[2],match[3]) + '/incident/' + match[1]) : archivedChunk(id);
+        const match = String(id).match(/^team-(book|analysis|evaluation)\/([\w-]+)\/([\w-]+)$/);
+        if (!match) return archivedChunk(id);
+        const base = root(match[2],match[3]);
+        return json(base + (match[1] === 'evaluation' ? '/evaluation' : '/incident/' + match[1]));
     };
 }
 
@@ -61,24 +64,46 @@ export async function teamDescriptor(region, id, revision, sha) {
     if (!reference || reference.revision !== revisionOf(archive) || !visual?.map_chunk ||
         reference.map_chunk !== visual.map_chunk || fields(archive).map_hash !== record.manifest.map_hash)
         throw new Error('팀 비행의 지도 원본과 3D 건물 지도의 출처가 다릅니다.');
-    record.nominal = archiveRows.find(row => row.run_id === pair.nominal);
-    if (fields(record.nominal).map_hash !== record.manifest.map_hash) record.nominal = null;
-    record.incidents = {...record.incidents, map_chunk:reference.map_chunk,
-        signal_template_chunk:reference.signal_template_chunk};
+    const pin = record.nominal_replay;
+    if (pin) {
+        if (pin.run_id !== id.replace(/^team-/, 'nominal-') || pin.revision !== revision)
+            throw new Error('선택한 팀 비행의 기본 대형 식별자가 다릅니다.');
+        const baseline = await json(root(pin.run_id,revision) + '/descriptor');
+        for (const item of [baseline.manifest, baseline.row]) {
+            if (item.run_id !== pin.run_id || revisionOf(item) !== revision || item.mode !== 'nominal' ||
+                item.team_commit !== sha || !sameFlightConditions(item, record.manifest))
+                throw new Error('같은 팀 버전과 실험 조건의 기본 대형 비행을 확인할 수 없습니다.');
+        }
+        record.baseline = baseline;
+    }
+    record.nominal = record.baseline?.row || null;
+    for (const arm of [record, record.baseline].filter(Boolean))
+        arm.incidents = {...arm.incidents, map_chunk:reference.map_chunk,
+            signal_template_chunk:reference.signal_template_chunk};
     return record;
 }
 
 export function setTeamFlight(record) {
+    const analysis = window.__DASHBOARD_ANALYSIS__;
     if (active) {
-        delete window.__DASHBOARD_ANALYSIS__.incidents[active.row.run_id];
-        delete marginRecords[active.row.run_id];
+        for (const arm of [active,active.baseline].filter(Boolean)) {
+            delete analysis.incidents[arm.row.run_id];
+            delete marginRecords[arm.row.run_id];
+        }
+        if (originalEvaluation !== undefined) analysis.evaluations[active.manifest.region] = originalEvaluation;
+        else delete analysis.evaluations[active.manifest.region];
     }
     active = record;
     if (record) {
-        window.__DASHBOARD_ANALYSIS__.incidents[record.row.run_id] = record.incidents;
-        if (record.margin?.revision === revisionOf(record.row)) marginRecords[record.row.run_id] = record.margin;
+        originalEvaluation = analysis.evaluations[record.manifest.region];
+        if (record.evaluation) analysis.evaluations[record.manifest.region] = record.evaluation;
+        else delete analysis.evaluations[record.manifest.region];
+        for (const arm of [record,record.baseline].filter(Boolean)) {
+            analysis.incidents[arm.row.run_id] = arm.incidents;
+            if (arm.margin?.revision === revisionOf(arm.row)) marginRecords[arm.row.run_id] = arm.margin;
+        }
     }
-    return record ? [...archiveRows, record.row] : archiveRows;
+    return record ? [...archiveRows, record.row, ...(record.nominal ? [record.nominal] : [])] : archiveRows;
 }
 
 export function teamPair(row) {

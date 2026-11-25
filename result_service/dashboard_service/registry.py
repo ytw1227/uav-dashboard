@@ -2,9 +2,10 @@
 from pathlib import Path, PurePosixPath
 from contextlib import contextmanager
 import hashlib, json, math, os, sqlite3, subprocess, threading, time
-from dashboard_contract.validation import validate_bundle, read_json, ContractError
+from dashboard_contract.validation import validate_bundle, read_json, ContractError, confined, sha256
 from dashboard_contract.definitions import metric_definition
 from .common import utcnow, digest, summary, completion_sort
+from .storage_policy import allocated_bytes, compression_enabled
 
 class Registry:
     def __init__(self,project_root,output_root,export_python=None,interval_s=10,max_exports=4,scan_raw=True,max_output_gib=4.0):
@@ -158,6 +159,27 @@ class Registry:
         signature=self._bundle_signature(path)
         if self.bundle_cache.get(str(path))==signature and str(path) in self.manifest_cache:
             return self.manifest_cache[str(path)],signature
+        with self.connection() as conn:
+            accepted=conn.execute("SELECT r.manifest,p.manifest_hash FROM records r JOIN revision_pins p "
+                                  "ON r.run_id=p.run_id AND r.revision=p.revision WHERE r.bundle=?",
+                                  (str(path),)).fetchone()
+        if accepted:
+            previous=json.loads(accepted[0])
+            manifest_path=confined(path,"manifest.json")
+            document=read_json(manifest_path)
+            if (digest(previous)==accepted[1] and digest(document)==accepted[1]
+                    and read_json(confined(path,"READY"),4096).get("manifest_sha256")==sha256(manifest_path)):
+                # These exact bytes already passed full row validation when
+                # registered. Re-hash every artifact after restart, avoiding
+                # decoding millions of identical rows while holding a lock.
+                unchanged=True
+                for name,reference in document["artifacts"].items():
+                    artifact=confined(path,name)
+                    if artifact.stat().st_size!=reference["size_bytes"] or sha256(artifact)!=reference["sha256"]:
+                        unchanged=False
+                        break
+                if unchanged:
+                    return document,signature
         doc=validate_bundle(path);doc.pop("bundle_path",None)
         return doc,signature
 
@@ -202,6 +224,7 @@ class Registry:
                 "raw_export_enabled":bool(self.export_python and self.scan_raw),"update_mode":"completed_results_only",
                 "scan_deferred_reason":self.scan_deferred_reason,
                 "storage":{"observed_bytes":self.output_bytes,"max_bytes":self.max_output_bytes,
+                           "quota_basis":"allocated" if compression_enabled(self.output) else "logical",
                            "scope":"entire dashboard output; quota checked before and during automatic export",
                            "partial_staging":"retained on export failure; never registered without validated READY"}}
 
@@ -209,17 +232,33 @@ class Registry:
     def _bundle_signature(path):
         return tuple((name,(path/name).stat().st_size,(path/name).stat().st_mtime_ns) for name in ("READY","manifest.json","scene.json","data.sqlite"))
 
-    def discover_bundles(self):
+    def discover_bundles(self, *, share_output=False):
         with self.connection() as c:known=[Path(r[0]) for r in c.execute("SELECT DISTINCT bundle FROM records WHERE bundle<>''")]
         candidates={ready.parent for ready in (self.output/"bundles").glob("*/*/READY")}
         # Missing READY is also a validation failure, not an invisible stale completed row.
         for path in sorted(candidates|set(known)):
-            try:
-                manifest,signature=self._validated(path)
-                self.put(manifest,path)
-                self.bundle_cache[str(path)]=signature;self.manifest_cache[str(path)]=manifest
-                self.clear_error("bundle:"+path.relative_to(self.output).as_posix())
-            except Exception as exc:self._quarantine(path,exc)
+            if self.stop_event.is_set():
+                break
+            if share_output:
+                # Completed bundles become visible by atomic rename. Release
+                # the writer lock between bundles so a cold catalog scan
+                # cannot block publication for the entire retained history.
+                with self._output_scan_lock() as acquired:
+                    if not acquired:
+                        self.scan_deferred_reason="another_registry_owns_output_scan"
+                        break
+                    self._discover_bundle(path)
+                time.sleep(.01)
+            else:
+                self._discover_bundle(path)
+
+    def _discover_bundle(self, path):
+        try:
+            manifest,signature=self._validated(path)
+            self.put(manifest,path)
+            self.bundle_cache[str(path)]=signature;self.manifest_cache[str(path)]=manifest
+            self.clear_error("bundle:"+path.relative_to(self.output).as_posix())
+        except Exception as exc:self._quarantine(path,exc)
 
     def _source_signature(self,path):
         # Cheap change detection only; the exporter verifies cryptographic source hashes.
@@ -270,12 +309,14 @@ class Registry:
 
     def _output_usage(self):
         total=0
+        physical=compression_enabled(self.output)
         for folder,dirs,files in os.walk(self.output,followlinks=False):
             dirs[:]=[name for name in dirs if not (Path(folder)/name).is_symlink() and (Path(folder)/name).resolve().is_relative_to(self.output)]
             for name in files:
                 path=Path(folder)/name
                 try:
-                    if not path.is_symlink() and path.resolve().is_relative_to(self.output):total+=path.stat().st_size
+                    if not path.is_symlink() and path.resolve().is_relative_to(self.output):
+                        total+=allocated_bytes(path) if physical else path.stat().st_size
                 except FileNotFoundError:pass
         self.output_bytes=total
         return total
@@ -394,12 +435,16 @@ class Registry:
                     self.scan_deferred_reason="another_registry_owns_output_scan";return False
                 self.scan_deferred_reason=None;self.scanning=True
                 try:
-                    self.discover_bundles();self.discover_sources(force=force);self._output_usage()
+                    if self.scan_raw:
+                        self.discover_bundles();self.discover_sources(force=force);self._output_usage()
                 except Exception as exc:self.error("registry","scan_failed",exc)
-                finally:
-                    self.scanning=False;self.current=None;self.last_scan_at=utcnow()
-                    from datetime import datetime,timezone,timedelta
-                    self.next_scan_at=(datetime.now(timezone.utc)+timedelta(seconds=self.interval)).isoformat()
+            if not self.scan_raw:
+                try:
+                    self.discover_bundles(share_output=True);self._output_usage()
+                except Exception as exc:self.error("registry","scan_failed",exc)
+            self.scanning=False;self.current=None;self.last_scan_at=utcnow()
+            from datetime import datetime,timezone,timedelta
+            self.next_scan_at=(datetime.now(timezone.utc)+timedelta(seconds=self.interval)).isoformat()
             return True
         finally:self.scan_lock.release()
 

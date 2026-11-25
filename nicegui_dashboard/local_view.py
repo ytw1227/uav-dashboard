@@ -36,8 +36,26 @@ class Operations(ServiceOperations):
     """Only predefined operations are callable. Original service validates them."""
 
     def compare(self, pins, metric):
-        return self._request("POST", "compare", {"runs": [{"run_id": r, "revision": v} for r, v in pins],
-                                                "metric_ids": [metric]})
+        keys = [metric, "ctr"] if metric == "search_connected_mean" else [metric]
+        result = self._request("POST", "compare", {"runs": [{"run_id": r, "revision": v} for r, v in pins],
+                                                     "metric_ids": keys})
+        if metric == "search_connected_mean":
+            # Preserve the service's separate groups and the original definition
+            # hash. Only the presentation key is shared across the two exporters.
+            for group in result["groups"]:
+                if not any(s["metric_id"] == metric for s in group["metrics"]):
+                    for stat in group["metrics"]:
+                        if stat["metric_id"] == "ctr" and is_team_ctr(stat["definition"]):
+                            stat["metric_id"] = metric
+                            for row in result["runs"]:
+                                missing = row.get("missing_metrics", {})
+                                if "ctr" in missing and row["run_id"] in group["run_ids"]:
+                                    missing[metric] = missing["ctr"]
+            for row in result["runs"]:
+                data = row["metrics"]
+                if metric not in data and "ctr" in data and is_team_ctr(data["ctr"]["definition"]):
+                    data[metric] = data["ctr"]
+        return result
 
     def rescan(self):
         return self._request("POST", "registry/rescan", {})
@@ -85,6 +103,11 @@ def meta(row):
 
 def revision(row):
     return row.get("bundle_revision") or row.get("revision")
+
+
+def is_team_ctr(definition):
+    return (definition.get("id") == "team-halfsec.ctr"
+            and definition.get("unit") == "ratio" and definition.get("scope") == "run_total")
 
 
 def event_id(event):
@@ -577,6 +600,9 @@ class Console:
                 with ui.card().classes("w-full"):
                     ui.label(title).classes("text-subtitle1 text-weight-bold")
                     stats = next((v for v in group["metrics"] if v["metric_id"] == metric), None)
+                    selected = len(group["run_ids"])
+                    valid = stats["n"] if stats else 0
+                    ui.label(f"선택 {selected}건 · 유효 {valid}건 · 결측 {selected - valid}건")
                     if stats:
                         unit = stats.get("unit", "")
                         ui.label(f"{stats['label']} · 표본 {stats['n']} · 균등 평균 {value_text(stats['mean'], unit)}"
@@ -596,6 +622,8 @@ class Console:
                         if r["run_id"] in group["run_ids"]:
                             saved = r["metrics"].get(metric, {})
                             with ui.expansion(f"{r['run_id']} · {value_text(saved.get('value'), saved.get('definition', {}).get('unit', ''))}"):
+                                if not saved:
+                                    ui.label(r.get("missing_metrics", {}).get(metric) or "이 실행에 비교 가능한 지표값이 없습니다.")
                                 dump({k: r.get(k) for k in ("bundle_revision", "mission_status", "metadata", "metrics")})
             if not result["groups"]:
                 ui.label("비교할 수 있는 그룹이 없습니다.")
@@ -768,7 +796,7 @@ class Console:
             if hasattr(self, "metric"):  # The archive comparison tab owns this selector.
                 options = dict(self.metric.options)
                 for mid, definition in (manifest.get("metric_definitions") or {}).items():
-                    if definition.get("comparable", True):
+                    if definition.get("comparable", True) and not (mid == "ctr" and is_team_ctr(definition)):
                         options[mid] = f"{definition.get('label') or mid} ({mid})"
                 self.metric.set_options(options, value=self.metric.value)
             settings = {k:manifest.get(k) for k in ("adapter_id","research_version","metadata","series_definitions")}

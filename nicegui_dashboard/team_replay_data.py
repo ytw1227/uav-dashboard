@@ -48,8 +48,10 @@ def zipped(raw):
 
 
 def load_events(root):
+    from .team_incidents import timeline_events
     with database(root) as db:
         rows = [unpack(blob) for (blob,) in db.execute("SELECT payload FROM events ORDER BY start_s,event_id")]
+        rows = timeline_events(db, rows)
     for row in rows:
         if row["type"] in {"persistent_search_outage", "search_outage"}:
             row["scope"] = "search_network"
@@ -68,7 +70,7 @@ def display_manifest(manifest, events):
     definitions["persistent_max_s"] = dict(label="최장 지속 단절", key="persistent_max_s", unit="s",
                                             aggregation="longest recorded persistent search outage")
     fields = {RADIO_FIELDS.get(key, key): value for key, value in manifest["observation_definitions"].items()}
-    return {**manifest, "recorded_mode": manifest["mode"], "mode": "v21",
+    return {**manifest, "recorded_mode": manifest["mode"], "mode": "nominal" if manifest["mode"] == "nominal" else "v21",
             "raw_metadata": {**manifest.get("raw_metadata", {}), "persistent_cut_intervals": cuts},
             "final_metrics": metrics, "metric_definitions": definitions, "observation_definitions": fields}
 
@@ -175,13 +177,30 @@ def overview_bytes(root, signature, forecast_file=None):
 @lru_cache(maxsize=12)
 def margin_series(root, signature):
     with database(root) as db:
-        times, values = [], []
+        times, values, edges, pairs, paths, active = [], [], [], [], [], []
+        pair_index, path_index = {}, {}
+        warning = False
         for (blob,) in db.execute("SELECT payload FROM rf_frames ORDER BY time_s"):
             frame = unpack(blob)
             times.append(frame["interval_start_s"])
-            values.append(frame["metrics"].get("network_margin_db"))
-    # No bottleneck aircraft/link ID was saved. Never infer IDs from the scalar.
-    return {"revision": root.name, "times": times, "values": values}
+            exact = frame.get("display_margin")
+            if exact:
+                margin = exact["value"]
+                warning = margin >= 0 and (margin < 7 if warning else margin <= 5)
+                values.append(margin)
+                edges.append(exact["edge"])
+                pairs.append(pair_index.setdefault(tuple(exact["pair"]),len(pair_index)))
+                paths.append(path_index.setdefault(tuple(exact["path"]),len(path_index)))
+                active.append(warning)
+            else:
+                values.append(frame["metrics"].get("network_margin_db"))
+    result = dict(revision=root.name,times=times,values=values)
+    if edges:
+        if len(edges) != len(times):
+            raise ValueError("비행 도중 통신 여유 산출 기준이 달라졌습니다.")
+        result.update(bottleneckEdges=edges,pairIndices=pairs,pathIndices=paths,warningActive=active,
+                      requiredPairs=list(pair_index),paths=list(path_index), exact=True)
+    return result
 
 
 def observations(root, m, observer, peer, start, stop, cursor):
@@ -231,13 +250,33 @@ def register_team_replay_routes(app, output_root):
 
     @app.get(prefix + "/descriptor", include_in_schema=False)
     def descriptor(rid: str, revision: str):
+        from .team_evaluation import reference_descriptor
         from .team_incidents import incident_descriptor
+        from .team_baseline_record import load_comparison, nominal_bundle
         root, sig, (m, _, events) = record(rid, revision)
         m = forecast_manifest(root, sig, m)
+        replay = None
+        if rid.startswith("team-") and m["mode"] != "nominal":
+            baseline = nominal_bundle(root)
+            if (baseline / "READY").is_file():
+                _, _, (nm, _, _) = record(baseline.parent.name, revision)
+                pair = load_comparison(root)
+                if pair:
+                    arm = pair["nominal"]
+                    pin = m.get("nominal_replay")
+                    if (not all(nm[k] == arm[k] for k in ("run_id", "bundle_revision", "region", "team_commit",
+                                "map_hash", "seed", "kind", "direction", "model_sha256", "controller", "pair_key",
+                                "mode", "simulation_end_s", "mission_completed"))
+                            or any(nm["final_metrics"].get(k) != v for k,v in arm["final_metrics"].items())
+                            or (pin and (pin["run_id"] != nm["run_id"] or pin["revision"] != revision
+                                         or pin["manifest_sha256"] != read_json(baseline/"READY")["manifest_sha256"]))):
+                        raise HTTPException(409, "기본 대형 재생과 비교표의 비행이 일치하지 않습니다.")
+                    replay = {"run_id":nm["run_id"], "revision":revision}
         keys = ("run_id", "bundle_revision", "adapter_id", "research_version", "region", "map_hash", "seed",
                 "kind", "direction", "split", "mode", "recorded_mode", "export_status", "artifact_kind",
                 "team_commit", "mission_completed", "simulation_end_s", "final_metrics")
-        return json_response(dict(row={k: m.get(k) for k in keys}, manifest=m,
+        return json_response(dict(row={k: m.get(k) for k in keys}, manifest=m, nominal_replay=replay,
+                                  evaluation=reference_descriptor(root, m),
                                   incidents=incident_descriptor(m, events), margin=margin_series(root, sig)))
 
     @app.get(prefix + "/manifest", include_in_schema=False)
@@ -285,6 +324,15 @@ def register_team_replay_routes(app, output_root):
         from .team_model import model_for_flight
         return json_response(model_for_flight(record(rid, revision)[2][0]))
 
+    @app.get(prefix + "/evaluation", include_in_schema=False)
+    def evaluation(rid: str, revision: str):
+        from .team_evaluation import read_reference
+        root, _, (m, _, _) = record(rid, revision)
+        value = read_reference(root, m)
+        if value is None:
+            raise HTTPException(404, "선택한 비행의 지역 예측 평가 기록이 없습니다.")
+        return json_response(value)
+
     @app.get(prefix + "/incident/{event_id}", include_in_schema=False)
     def incident(rid: str, revision: str, event_id: str):
         from .team_incidents import read_incident
@@ -293,4 +341,7 @@ def register_team_replay_routes(app, output_root):
             e["id"] == event_id and e["type"] == "persistent_search_outage" for e in events
         ):
             raise HTTPException(404, "해당 비행의 사건을 찾을 수 없습니다.")
-        return json_response({} if event_id == "analysis" else read_incident(root, m, event_id, events))
+        if event_id == "analysis":
+            from .team_analysis import read_analysis
+            return json_response(read_analysis(root, m))
+        return json_response(read_incident(root, m, event_id, events))

@@ -4,6 +4,15 @@ from pathlib import Path
 from result_service.dashboard_contract.validation import canonical_hash, confined, read_json, sha256
 
 
+def nominal_bundle(bundle):
+    """The native baseline and applied flight are independently sealed under one revision."""
+    bundle = Path(bundle).resolve()
+    if bundle.parent.parent.name != "bundles" or not bundle.parent.name.startswith("team-"):
+        raise ValueError("팀 비행의 기본 대형 경로를 확인할 수 없습니다.")
+    nominal = "nominal-" + bundle.parent.name.removeprefix("team-")
+    return confined(bundle.parent.parent, Path(nominal) / bundle.name, must_exist=False)
+
+
 def comparison_path(bundle):
     bundle = Path(bundle).resolve()
     if bundle.parent.parent.name != "bundles":

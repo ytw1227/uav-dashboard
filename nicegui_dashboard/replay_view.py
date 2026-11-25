@@ -30,6 +30,8 @@ def _between(text: str, start: str, end: str) -> str:
 @lru_cache
 def _markup() -> tuple[str, ...]:
     template = (SOURCE / 'index.html').read_text(encoding='utf-8-sig')
+    template = template.replace('현재 적용한 11월 13일 모델 · 복구 보강의 정보와 저장된 평가 성능입니다.',
+                                '선택한 비행에 대응하는 모델 정보와 저장된 평가 성능입니다.')
     return (
         _between(template, '<div id="notice"', '<nav class="tabs"'),
         _between(template, '<section id="analysisView">', '<section id="compareView"'),
@@ -53,8 +55,9 @@ def _controller() -> str:
                         'const pair = teamPair(row) || pairedFlights(S.runs, row);')
     code = code.replace('const pair = pairedFlights(S.runs, selectedCatalogRun());',
                         'const pair = teamPair(selectedCatalogRun()) || pairedFlights(S.runs, selectedCatalogRun());')
-    code = code.replace("else $('flightTabNote').textContent = '';",
-                        "else $('flightTabNote').textContent = teamPair(row) ? '기본 대형은 기존 비행 기록입니다.' : '';")
+    code = code.replace('`${absent}의 같은 조건 비행 기록이 없습니다.`',
+                        'teamPair(row) ? `${absent}의 같은 조건 재생 경로가 아직 등록되지 않았습니다.`'
+                        ' : `${absent}의 같은 조건 비행 기록이 없습니다.`')
     code = code.replace('const model = isRepresentative(manifest)',
                         "const model = m.adapter_id === 'team-halfsec' || isRepresentative(manifest)")
     code = code.replace("$('runEyebrow').textContent = `",

@@ -11,9 +11,10 @@ import re
 import sqlite3
 import subprocess
 import sys
+import signal
 
 from result_service.dashboard_contract.validation import confined, read_json, sha256
-from .team_baseline_record import comparison_path, load_comparison
+from .team_baseline_record import load_comparison, nominal_bundle
 from .team_runtime import file_lock, map_coverage, prepare_version, research_runtime
 from .team_source import WorkerInterrupted, check_worker_exit, source_path, source_status
 
@@ -37,6 +38,10 @@ CREATE INDEX IF NOT EXISTS job_region ON jobs(region,id);
 
 def now():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+class UpdateCancelled(Exception):
+    pass
 
 
 class TeamUpdates:
@@ -69,7 +74,20 @@ class TeamUpdates:
 
     @staticmethod
     def _active(conn):
-        return conn.execute("SELECT 1 FROM jobs WHERE state IN ('running','queued') LIMIT 1").fetchone() is not None
+        return conn.execute("SELECT 1 FROM jobs WHERE state IN ('running','queued','cancelling') LIMIT 1").fetchone() is not None
+
+    def cancel(self, batch_id):
+        with self.connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute("UPDATE jobs SET state='cancelled',phase='cancelled',message=?,finished_at=? "
+                         "WHERE batch=? AND state='queued'", ("사용자 요청으로 갱신 중단", now(), batch_id))
+            conn.execute("UPDATE jobs SET state='cancelling',phase='cancelling',message=? "
+                         "WHERE batch=? AND state='running'", ("실행 중인 비행을 중단하는 중", batch_id))
+
+    def _cancel_requested(self, job_id):
+        with self.connection() as conn:
+            row = conn.execute("SELECT state FROM jobs WHERE id=?", (job_id,)).fetchone()
+        return row is not None and row["state"] in ("cancelling", "cancelled")
 
     def start(self, region, sha):
         return self.start_many([region], sha)
@@ -144,14 +162,14 @@ class TeamUpdates:
                     bundle = self.output_root / "bundles" / pin["run_id"] / pin["revision"]
                     manifest = read_json(bundle / "manifest.json")
                     try:
-                        needs_pair = manifest.get("adapter_id") == "team-halfsec" and load_comparison(bundle) is None
+                        missing = self._missing(bundle, manifest) if manifest.get("adapter_id") == "team-halfsec" else []
                     except (KeyError, ValueError, TypeError, OSError) as exc:
                         conn.execute("INSERT INTO jobs(batch,region,state,phase,message,finished_at) VALUES(?,?,?,?,?,?)",
                                      (bid, region, "failed", "failed", f"보관된 비교 기록 확인 필요 · {exc}", now()))
                         continue
-                    if needs_pair:
+                    if missing:
                         conn.execute("INSERT INTO jobs(batch,region,state,phase,message,flights) VALUES(?,?,?,?,?,?)",
-                                     (bid, region, "queued", "pair_pending", "등록된 비행의 기본 대형 비교를 준비합니다.",
+                                     (bid, region, "queued", "pair_pending", "기존 비행 보완 대기 · " + ", ".join(missing),
                                       json.dumps(current["flights"])))
                     else:
                         conn.execute("INSERT INTO jobs(batch,region,state,phase,message,finished_at,flights) VALUES(?,?,?,?,?,?,?)",
@@ -215,10 +233,11 @@ class TeamUpdates:
                 pin = json.loads(item["flights"])["v21"]
                 bundle = self.output_root / "bundles" / pin["run_id"] / pin["revision"]
                 try:
-                    if not comparison_path(bundle).is_file():
+                    if not (nominal_bundle(bundle) / "READY").is_file():
                         continue
-                    pair = load_comparison(bundle)
-                    if not pair or (pair["applied"]["region"], pair["applied"]["team_commit"]) != (item["region"], batch["sha"]):
+                    manifest = read_json(bundle / "manifest.json")
+                    if ((manifest["region"], manifest["team_commit"]) != (item["region"], batch["sha"])
+                            or self._missing(bundle, manifest)):
                         continue
                 except (KeyError, ValueError, TypeError, OSError):
                     continue  # The recorder will report the validation error on its own job.
@@ -226,9 +245,9 @@ class TeamUpdates:
                              "WHERE id=? AND state='queued' AND flights=?",
                              ("등록된 비행에 같은 조건의 비교 결과를 반영했습니다.", now(), item["id"], item["flights"]))
             items = [self._row(r) for r in conn.execute("SELECT region,state,phase,message,finished_at FROM jobs WHERE batch=? ORDER BY id", (batch["id"],))]
-        counts = {k: sum(item["state"] == k for item in items) for k in ("queued","running","completed","failed","unavailable")}
+        counts = {k: sum(item["state"] == k for item in items) for k in ("queued","running","completed","failed","unavailable","cancelling","cancelled")}
         return {**dict(batch), **counts, "total": len(items), "items": items,
-                "active": bool(counts["queued"] + counts["running"]),
+                "active": bool(counts["queued"] + counts["running"] + counts["cancelling"]),
                 "region": next((item["region"] for item in items if item["state"] == "running"), None)}
 
     def _published(self, conn, region):
@@ -279,25 +298,53 @@ class TeamUpdates:
 
     def _set(self, job_id, state, phase, message, flights=None):
         with self.connection() as conn:
-            conn.execute("UPDATE jobs SET state=?,phase=?,message=?,finished_at=?,flights=COALESCE(?,flights) WHERE id=?",
-                         (state, phase, message, now() if state in ("failed", "completed") else None,
-                          json.dumps(flights) if flights else None, job_id))
+            conn.execute("UPDATE jobs SET state=?,phase=?,message=?,finished_at=?,flights=COALESCE(?,flights) WHERE id=? "
+                         "AND (state NOT IN ('cancelling','cancelled') OR ?='cancelled')",
+                         (state, phase, message, now() if state in ("failed", "completed", "cancelled") else None,
+                          json.dumps(flights) if flights else None, job_id, state))
 
     def _run_recorder(self, job, arguments):
         request_dir = self.work / "attempts" / f"job-{job['id']}"
         request_dir.mkdir(parents=True, exist_ok=True)
         log_path = request_dir / "flight.log"
+        if self._cancel_requested(job["id"]):
+            raise UpdateCancelled()
         with log_path.open("ab") as out:
-            result = subprocess.run([job["python"], "-B", "-m", *arguments], cwd=PROJECT,
+            options = {"creationflags":subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {"start_new_session":True}
+            result = subprocess.Popen([job["python"], "-B", "-m", *arguments], cwd=PROJECT,
                                     stdout=out, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
                                     env=dict(os.environ, PYTHONUTF8="1", PYTHONDONTWRITEBYTECODE="1", UAV_RESULT_MAX_GIB=str(job["quota_gib"]),
-                                             OMP_NUM_THREADS="1", OPENBLAS_NUM_THREADS="1", MKL_NUM_THREADS="1"))
+                                             OMP_NUM_THREADS="1", OPENBLAS_NUM_THREADS="1", MKL_NUM_THREADS="1"), **options)
+            while result.poll() is None:
+                if self._cancel_requested(job["id"]):
+                    if os.name == "nt":
+                        subprocess.run(["taskkill", "/PID", str(result.pid), "/T", "/F"],
+                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                       creationflags=subprocess.CREATE_NO_WINDOW, check=False)
+                    else:
+                        os.killpg(result.pid, signal.SIGTERM)
+                    result.wait(timeout=15)
+                    raise UpdateCancelled()
+                try:
+                    result.wait(timeout=.5)
+                except subprocess.TimeoutExpired:
+                    pass
+        if self._cancel_requested(job["id"]):
+            raise UpdateCancelled()
         if result.returncode:
             check_worker_exit(result.returncode)
             with log_path.open("rb") as log:
                 log.seek(max(0, log.seek(0, os.SEEK_END) - 3000))
                 lines = log.read().decode("utf-8", errors="replace").strip().splitlines()
             detail = lines[-1][-400:] if lines else f"종료 코드 {result.returncode}"
+            failure = request_dir / "failure.json"
+            if failure.is_file():
+                try:
+                    message = read_json(failure).get("message")
+                    if isinstance(message, str) and message.strip():
+                        detail = message.strip()[:400]
+                except (OSError, ValueError, AttributeError):
+                    pass
             raise RuntimeError(f"{detail} (실행 기록 {log_path.name}, 작업 {request_dir.name})")
 
     def _capture(self, job, code):
@@ -313,24 +360,46 @@ class TeamUpdates:
             raise ValueError("완료 결과의 실행 식별자 또는 READY 표시를 확인하지 못했습니다.")
         return flights
 
+    def _paired_replay(self, bundle):
+        """A comparison alone cannot replay the baseline on the region card."""
+        pair = load_comparison(bundle)
+        if not pair:
+            return None
+        sibling = nominal_bundle(bundle)
+        if not (sibling / "READY").is_file():
+            return None
+        arm = pair["nominal"]
+        baseline_pin = {"run_id":sibling.parent.name, "revision":sibling.name}
+        if not self._available({"v21":baseline_pin}, arm["region"], arm["team_commit"]):
+            raise ValueError("기본 대형 재생 자료의 완료 표시·실험 조건을 확인할 수 없습니다.")
+        restored = read_json(sibling / "manifest.json")
+        if any(restored.get(key) != value for key, value in arm.items()):
+            raise ValueError("기본 대형 재생과 비교에 쓰인 비행이 다릅니다.")
+        return pair
+
+    def _missing(self, bundle, _manifest):
+        return [] if self._paired_replay(bundle) else ["기본 대형 재생·비교"]
+
     def _complete_comparison(self, job):
         flights = json.loads(job["flights"])
         if not self._available(flights, job["region"], job["sha"]):
             raise ValueError("비교할 기존 비행의 팀 버전 또는 지도 기록을 확인할 수 없습니다.")
         pin = flights["v21"]
         bundle = self.output_root / "bundles" / pin["run_id"] / pin["revision"]
-        if load_comparison(bundle) is not None:
+        if self._paired_replay(bundle):
             return
         code = prepare_version(job["source"], job["sha"], Path(job["core"]), self.state_root)
         self._run_recorder(job, ["nicegui_dashboard.team_baseline", "--output-root", str(self.output_root),
-                                 "--snapshot", str(code.parent / "snapshot.json"),
+                                 "--snapshot", str(code.parent / "snapshot.json"), "--with-replay",
                                  "--pin", pin["run_id"], pin["revision"]])
-        if load_comparison(bundle) is None:
-            raise ValueError("비교 비행을 계산했지만 같은 조건의 결과를 찾을 수 없습니다.")
+        if not self._paired_replay(bundle):
+            raise ValueError("같은 비행의 기본 대형 재생과 비교 자료가 등록되지 않았습니다.")
 
     def run_worker(self):
         with file_lock(self.work / "worker.lock", wait=True):
             with self.connection() as conn:
+                conn.execute("UPDATE jobs SET state='cancelled',phase='cancelled',message=?,finished_at=? WHERE state='cancelling'",
+                             ("사용자 요청으로 갱신 중단", now()))
                 # A recorder may survive the queue supervisor. Reattach to the
                 # same attempt; its lock and result file prevent a duplicate run.
                 conn.execute("UPDATE jobs SET state='queued',phase='queued',message=? WHERE state='running'",
@@ -345,20 +414,27 @@ class TeamUpdates:
                     conn.execute("UPDATE jobs SET state='running',phase='preparing',message=? WHERE id=?",
                                  ("선택한 팀 버전과 연구 자료 준비 중", job["id"]))
                 try:
+                    if self._cancel_requested(job["id"]):
+                        raise UpdateCancelled()
                     if job["flights"]:
                         self._set(job["id"], "running", "pairing", "등록된 비행과 같은 조건의 기본 대형을 계산하는 중")
                         self._complete_comparison(job)
-                        self._set(job["id"], "completed", "reused", "기존 팀 비행에 같은 버전의 비교 결과를 반영했습니다.")
+                        self._set(job["id"], "completed", "reused", "기존 팀 비행에 같은 버전의 보완 자료를 반영했습니다.")
                         continue
                     code = prepare_version(job["source"], job["sha"], Path(job["core"]), self.state_root)
                     self._set(job["id"], "running", "simulating", "팀 시뮬레이터 실행 및 결과 검증 중")
                     flights = self._capture(job, code)
                     self._set(job["id"], "completed", "published", "검증한 비행을 지역 카드에 반영했습니다.", flights)
+                except UpdateCancelled:
+                    self._set(job["id"], "cancelled", "cancelled", "사용자 요청으로 갱신 중단")
                 except WorkerInterrupted:
                     self._set(job["id"], "queued", "queued", "PC에서 실행이 중단됐습니다. 대시보드를 다시 열면 이어갑니다.")
                     return
                 except Exception as exc:
                     self._set(job["id"], "failed", "failed", str(exc)[:700])
+                finally:
+                    if self._cancel_requested(job["id"]):
+                        self._set(job["id"], "cancelled", "cancelled", "사용자 요청으로 갱신 중단")
 
 
 if __name__ == "__main__":

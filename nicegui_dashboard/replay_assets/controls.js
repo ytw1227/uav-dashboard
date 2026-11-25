@@ -104,6 +104,20 @@ export async function initialize(source, preferredRun, preferredRevision, deferI
     for (const event of ['click', 'change', 'input', 'pointerup', 'close']) {
         surface.addEventListener(event, publishSelection, true);
     }
+    // Preserve the edition as soon as a person starts examining it. Internal
+    // draws, playback ticks and programmatic state changes do not fire trusted input.
+    function keepEdition(event) {
+        if (event.isTrusted && !S.flightLoading && S.runId && selectionTicket) {
+            window.emitEvent('uav_replay_state', {...clientState(), manual:true});
+        }
+    }
+    surface.addEventListener('pointerdown', keepEdition, true);
+    surface.addEventListener('keydown', keepEdition, true);
+    surface.addEventListener('input', keepEdition, true);
+    document.addEventListener('keydown', event => {
+        if (event.target === document.body && ['ArrowLeft','ArrowRight',' '].includes(event.key))
+            keepEdition(event);
+    });
     document.addEventListener('keyup', publishSelection);
     // A whole-page route change releases all scoped components, Plotly canvases,
     // document keyboard listeners and local clocks. No state is stored globally
@@ -157,13 +171,20 @@ async function openTeam(region, id, revision, sha, mode, ticket, restart) {
     }
     if (selectionTicket !== ticket) return clientState();
     const row = mode === 'nominal' ? record.nominal : record.row;
-    if (!row) throw new Error('이 지역에 저장된 기본 대형 비행이 없습니다.');
+    if (!row) {
+        surface.dataset.loadState = 'error';
+        surface.removeAttribute('aria-busy');
+        return {...clientState(), open_error:'선택한 팀 비행에는 기본 대형의 재생 경로가 없습니다.'};
+    }
     const sameEdition = teamContext() === id && revisionOf(teamManifest()) === revision;
     S.runs = setTeamFlight(record);
     surface.dataset.teamResult = id;
     // Even the same nominal pin needs new comparison/model-tab state when its context changes.
     await chooseRun(row.run_id, revisionOf(row), !restart && sameEdition);
     if (selectionTicket === ticket) {
+        // A matching baseline can be published while this very flight is on screen.
+        // chooseRun keeps its clock and camera; update the available buttons separately.
+        renderFlightModes();
         surface.removeAttribute('aria-busy');
         publishSelection();
         if (surface.dataset.loadState === 'error') return {...clientState(), open_error:$('notice').textContent};
@@ -182,8 +203,6 @@ async function teamComparison(request) {
     const interference = {continuous:'지속 간섭', intermittent:'간헐 간섭', clear:'간섭 없음'}[manifest.kind] || manifest.kind;
     const placement = {east_west:'동서 배치', north_south:'남북 배치'}[manifest.direction] || manifest.direction;
     const conditions = `같은 지도 · ${interference} · ${placement} · seed ${manifest.seed} · 팀 코드 ${manifest.team_commit.slice(0,7)}`;
-    const modeNote = metadata(selectedCatalogRun()).mode === 'nominal'
-        ? ' · 지도에서 재생한 기본 대형은 이전 기록입니다. 이 표는 선택한 팀 버전으로 실행한 두 비행을 비교합니다.' : '';
     $('pairedConditions').textContent = conditions;
     $('pairedTable').textContent = '두 비행 결과를 읽는 중…';
     async function refresh() {
@@ -192,16 +211,16 @@ async function teamComparison(request) {
             const data = await readTeamComparison(manifest);
             if (!current()) return;
             if (data.status === 'ready') {
-                $('pairedConditions').textContent = conditions + ' · 각 방식 1회' + modeNote;
+                $('pairedConditions').textContent = conditions + ' · 각 방식 1회';
                 $('pairedTable').innerHTML = pairedTable(data.nominal, data.applied);
             } else {
-                $('pairedConditions').textContent = conditions + ' · ' + (data.message || '기본 대형 비교 결과 대기 중') + modeNote;
+                $('pairedConditions').textContent = conditions + ' · ' + (data.message || '기본 대형 비교 결과 대기 중');
                 $('pairedTable').innerHTML = pairedTable({}, manifest);
                 comparisonTimer = setTimeout(refresh, 5000);
             }
         } catch (error) {
             if (current()) {
-                $('pairedConditions').textContent = conditions + ' · ' + error.message + modeNote;
+                $('pairedConditions').textContent = conditions + ' · ' + error.message;
                 $('pairedTable').innerHTML = pairedTable({}, manifest);
             }
         }

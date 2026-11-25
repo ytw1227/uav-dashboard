@@ -1,15 +1,16 @@
 """Run the connected team source and open its immutable results on the regional page."""
 import asyncio
+import json
 import logging
 
 from nicegui import ui
 
-from .service import ServiceReader, ServiceReadError
-from .team_baseline_record import comparison_path, load_comparison
+from .team_baseline_record import comparison_path, load_comparison, nominal_bundle
 from .team_source import source_path, source_status
 
 
-STATES = {"queued": "대기", "running": "실행 중", "completed": "완료", "failed": "실패", "unavailable": "실행 제외"}
+STATES = {"queued": "대기", "running": "실행 중", "completed": "완료", "failed": "실패", "unavailable": "실행 제외",
+          "cancelling": "중단 중", "cancelled": "중단됨"}
 
 
 def applied_pin(record):
@@ -24,6 +25,46 @@ def manifest_metrics(manifest):
     return metrics
 
 
+def file_stamp(path):
+    try:
+        stat = path.stat()
+        return stat.st_mtime_ns, stat.st_size
+    except FileNotFoundError:
+        return None
+
+
+def native_card_record(store, record):
+    """Read the same immutable pair used by the replay and comparison tabs."""
+    pin = applied_pin(record)
+    card = {"sha": record["sha"], "pin": pin, "metrics": {}}
+    if not store:
+        raise ValueError("선택한 비행이 등록된 결과 폴더를 확인할 수 없습니다.")
+    bundle = store.joinpath("bundles", *pin)
+    manifest = json.loads((bundle / "manifest.json").read_bytes())
+    if ((manifest["run_id"], manifest["bundle_revision"], manifest["team_commit"]) != (*pin, record["sha"])
+            or record.get("region", manifest["region"]) != manifest["region"]):
+        raise ValueError("선택한 비행과 지역 카드의 버전이 다릅니다.")
+    card["metrics"] = manifest_metrics(manifest)
+    from .team_evaluation import evaluation_path, reference_descriptor
+    nominal_ready = nominal_bundle(bundle) / "READY"
+    # Snapshot before reading so a publication during this read is retried on the next poll.
+    files = {p: file_stamp(p) for p in (comparison_path(bundle), nominal_ready, evaluation_path(bundle))}
+    evaluation = reference_descriptor(bundle, manifest) or {}
+    if evaluation.get("region") == manifest["region"]:
+        card["evaluation"] = evaluation.get("summary") or {}
+    definitions = manifest.get("metric_definitions") or {}
+    card["metric_versions"] = {k: (definitions.get(native) or {}).get("definition_hash", "")
+                               for k, native in (("pdr", "pdr"), ("search_connected_mean", "ctr"))}
+    pair = load_comparison(bundle)
+    if pair:
+        card["nominal"] = manifest_metrics(pair["nominal"])
+        card["metrics"] = manifest_metrics(pair["applied"])
+        nominal_pin = (pair["nominal"]["run_id"], pair["nominal"]["bundle_revision"])
+        card["nominal_pin"] = nominal_pin
+        card["nominal_replay"] = files[nominal_ready] is not None
+    return card, files
+
+
 class RegionalRuns:
     def __init__(self, updates, library, service_url, code_updates):
         self.updates = updates
@@ -34,11 +75,12 @@ class RegionalRuns:
         self.coverage_error = ""
         self.library = library
         self.labels = {card.region: card.label for card in library.cards}
-        self.api = ServiceReader(service_url)
         self.selection = None
         self.display_key = None
+        self.display_supplements = None
         self.view_ticket = 0
-        self.preferred = None
+        self.editions = {}
+        self.card_records = {}
         self.requested_display = None
         self.user_selection = 0
         self.batch_seen = object()
@@ -60,6 +102,9 @@ class RegionalRuns:
                                        label="실행 범위", value="selected", on_change=self.update_button).props(
                     "dense outlined options-dense data-testid=team-run-scope").classes("min-w-32")
                 self.start = ui.button("선택 지역 실행", on_click=self.start_run).props("no-caps data-testid=team-run-start")
+                self.cancel = ui.button("현재 갱신 중단", on_click=self.cancel_batch).props(
+                    "outline no-caps data-testid=team-run-cancel")
+                self.cancel.set_visibility(False)
                 self.retry = ui.button("실패 지역만 재시도", on_click=self.retry_failed).props(
                     "outline no-caps data-testid=team-run-retry")
                 self.retry.set_visibility(False)
@@ -123,6 +168,30 @@ class RegionalRuns:
         self.eligible_note.set_text(note)
         self.start.set_enabled(available and possible)
         self.retry.set_enabled(available and checked)
+        self.cancel.set_visibility(bool(batch.get("active")))
+        self.cancel.set_text("갱신 중단 중" if batch.get("cancelling") else "현재 갱신 중단")
+        self.cancel.set_enabled(self.updates is not None and not self.busy and bool(batch.get("active"))
+                                and not batch.get("cancelling"))
+
+    async def cancel_batch(self):
+        batch = self.batch_seen if isinstance(self.batch_seen, dict) else {}
+        if self.busy or not self.updates or not batch.get("active") or batch.get("cancelling"):
+            return
+        self.busy = True
+        self.job_error = ""
+        self.update_button()
+        try:
+            await asyncio.to_thread(self.updates.cancel, batch["id"])
+            if self.requested_display and self.requested_display[1] == batch["sha"]:
+                self.requested_display = None
+        except (OSError, RuntimeError, ValueError) as exc:
+            self.job_error = str(exc)
+        finally:
+            self.busy = False
+            self.update_button()
+            if self.job_error:
+                self.message.set_text(self.job_error)
+            await self.refresh()
 
     async def start_run(self):
         if (self.busy or not self.updates or not self.card or self.code_updates.syncing
@@ -185,7 +254,8 @@ class RegionalRuns:
         self.job_items.clear()
         message = ""
         if batch:
-            counts = " · ".join(f"{STATES[state]} {batch.get(state, 0)}" for state in STATES)
+            counts = " · ".join(f"{label} {batch.get(state, 0)}" for state, label in STATES.items()
+                                if state not in ("cancelling", "cancelled") or batch.get(state))
             message = f"팀 {batch['sha'][:7]} · {counts}"
             reused = sum(item.get("phase") == "reused" for item in batch.get("items", []))
             if reused:
@@ -201,50 +271,30 @@ class RegionalRuns:
                     ui.label(line).classes("text-sm")
         self.message.set_text(" · ".join(filter(None, [self.job_error, message])))
 
-    def read_card_metrics(self):
+    def read_card_metrics(self, editions):
         records = {}
         comparison_files = {}
         ready = True
         for region in self.labels:
-            current = self.updates.current(region)
+            selected = editions.get(region)
+            if selected == "archive":
+                continue
+            if selected:
+                current = next((row for row in self.updates.history(region)
+                                if applied_pin(row) == tuple(selected.split("/"))), None)
+            else:
+                current = self.updates.current(region)
             if current and applied_pin(current):
                 pin = applied_pin(current)
-                record = records[region] = {"sha": current["sha"], "metrics": {}, "pin": pin}
                 store = getattr(self.updates, "output_root", None)
-                if store:
-                    bundle = store.joinpath("bundles", *pin)
-                    path = comparison_path(bundle)
-                    comparison_files[path] = self.comparison_stamp(path)
-                    try:
-                        pair = load_comparison(bundle)
-                        if pair:
-                            record["nominal"] = manifest_metrics(pair["nominal"])
-                            record["metrics"] = manifest_metrics(pair["applied"])
-                    except (KeyError, OSError, ValueError, TypeError) as exc:
-                        logging.getLogger(__name__).warning("Cannot use comparison for %s: %s", region, exc)
-        self.comparison_files = comparison_files
-        if records:
-            try:
-                runs = self.api.runs()["runs"]
-            except ServiceReadError:
-                # Registry refresh can lag a published recording. Its pinned replay remains readable.
-                return records, False
-            by_pin = {(row["run_id"], row.get("bundle_revision")): row for row in runs}
-            for record in records.values():
-                row = by_pin.get(record["pin"])
-                if row is None:  # The result registry may still be scanning the new bundle.
+                try:
+                    records[region], files = native_card_record(store, current)
+                    comparison_files.update(files)
+                except (KeyError, OSError, ValueError, TypeError) as exc:
+                    logging.getLogger(__name__).warning("Cannot read selected edition for %s: %s", region, exc)
+                    records[region] = {"sha": current["sha"], "metrics": {}, "pin": pin, "read_error":str(exc)}
                     ready = False
-                    continue
-                record["metrics"] = {**manifest_metrics(row), **record["metrics"]}
-        return records, ready
-
-    @staticmethod
-    def comparison_stamp(path):
-        try:
-            st = path.stat()
-            return st.st_mtime_ns, st.st_size
-        except FileNotFoundError:
-            return None
+        return records, ready, comparison_files
 
     async def refresh(self):
         if not self.updates or self.polling:
@@ -273,17 +323,22 @@ class RegionalRuns:
                 updated.get("id"), updated.get("completed"))
             if changed:
                 self.draw_batch(batch)
-            pairs_changed = any(self.comparison_stamp(path) != stamp for path, stamp in self.comparison_files.items())
+            pairs_changed = any(file_stamp(path) != stamp for path, stamp in self.comparison_files.items())
             if not self.cards_ready or pairs_changed or publications_changed:
-                records, self.cards_ready = await asyncio.to_thread(self.read_card_metrics)
-                self.library.show_team_results(records)
+                editions = dict(self.editions)
+                records, ready, files = await asyncio.to_thread(self.read_card_metrics, editions)
+                if editions == self.editions:
+                    self.card_records, self.cards_ready, self.comparison_files = records, ready, files
+                    self.library.show_team_results(records)
+                else:
+                    self.cards_ready = False
             if self.requested_display and batch and self.requested_display == (self.card.region, batch["sha"]):
                 state = next((i["state"] for i in batch["items"] if i["region"] == self.card.region), None)
                 if state == "completed":
                     self.requested_display = None
-                    self.preferred = None
+                    self.editions.pop(self.card.region, None)
                     self.selection = self.library.select_mode_for_result(self.card.region, "v21")
-                elif state in ("failed", "unavailable"):
+                elif state in ("failed", "unavailable", "cancelling", "cancelled"):
                     self.requested_display = None
             await self.show_selection()
         except (OSError, ValueError, KeyError, RuntimeError) as exc:
@@ -294,12 +349,11 @@ class RegionalRuns:
     async def select(self, key, restart):
         self.user_selection += 1
         self.requested_display = None
-        previous = self.selection
         self.selection = key
-        if self.library.by_flight.get(previous) is not self.card:
-            self.preferred = None
         self.update_button()
         await self.show_selection(restart=restart)
+        if self.selection == key and self.display_choice and self.display_key == (key, self.display_choice):
+            self.editions[self.card.region] = self.display_choice
 
     def replay_state(self, state):
         # Only accept a change of flight mode from the currently mounted region/edition.
@@ -316,13 +370,21 @@ class RegionalRuns:
         if context:
             if not self.display_choice or self.display_choice.split("/")[0] != context:
                 return
-            expected = tuple(self.display_choice.split("/")) if mode == "v21" else flight.key
+            expected = (tuple(self.display_choice.split("/")) if mode == "v21"
+                        else self.card_records.get(card.region, {}).get("nominal_pin"))
         else:
             if self.display_choice not in ("archive", None):
                 return
             expected = flight.key
-        if shown != expected or flight.key == self.selection:
+        if shown != expected:
             return
+        if state.get("manual") and self.display_choice:
+            self.editions[card.region] = self.display_choice
+            self.user_selection += 1
+            self.requested_display = None
+        if flight.key == self.selection:
+            return
+        self.editions[card.region] = self.display_choice
         self.selection = self.library.select_mode_for_result(card.region, mode)
         self.display_key = self.selection, self.display_choice
         self.user_selection += 1
@@ -336,7 +398,7 @@ class RegionalRuns:
     async def choose_version(self, event):
         if self.updating_choices or not event.value or event.value == self.display_choice:
             return
-        self.preferred = event.value
+        self.editions[self.card.region] = event.value
         self.user_selection += 1
         self.requested_display = None
         await self.show_selection()
@@ -344,10 +406,10 @@ class RegionalRuns:
     def show_recorded_version(self):
         region, sha, interval = self.recorded_source
         if self.mode == "nominal":
-            self.show_archive_source(region, "nominal")
-            return
-        source = f"표시 중 · {region} · 실행한 팀 코드 {sha[:7]}"
-        if interval is not None:
+            source = f"표시 중 · {region} · 기본 대형 · 실행한 팀 코드 {sha[:7]}"
+        else:
+            source = f"표시 중 · {region} · 실행한 팀 코드 {sha[:7]}"
+        if interval is not None and self.mode != "nominal":
             source += f" · 판단 주기 {interval:g}초"
         connected = self.code_updates.commit
         if connected and connected != sha:
@@ -378,7 +440,27 @@ class RegionalRuns:
                 finished = str(record.get("finished_at") or "")[:19].replace("T", " ")
                 options[name] = f"팀 {record['sha'][:7]} · {finished} UTC"
         options["archive"] = "기존 대시보드 비행"
-        active = self.preferred if self.preferred in options else next(iter(options))
+        preferred = self.editions.get(card.region)
+        active = preferred if preferred in options else next(iter(options))
+        card_record = self.card_records.get(card.region)
+        if active == "archive":
+            if card_record is not None:
+                self.card_records.pop(card.region)
+                self.library.show_team_results(self.card_records)
+        elif not card_record or card_record.get("read_error") or card_record["pin"] != applied_pin(records[active]):
+            try:
+                card_record, files = await asyncio.to_thread(native_card_record,
+                                                            getattr(self.updates, "output_root", None), records[active])
+            except (KeyError, OSError, ValueError, TypeError) as exc:
+                selected = records[active]
+                card_record = {"sha":selected["sha"], "metrics":{}, "pin":applied_pin(selected), "read_error":str(exc)}
+                files = []
+                self.cards_ready = False
+            if epoch != self.generation or key != self.selection or preferred != self.editions.get(card.region):
+                return
+            self.card_records[card.region] = card_record
+            self.comparison_files.update(files)
+            self.library.show_team_results(self.card_records)
         self.updating_choices = True
         self.display_choice = active
         try:
@@ -388,17 +470,32 @@ class RegionalRuns:
         finally:
             self.updating_choices = False
         identity = (key, active)
-        if self.display_key == identity and not restart:
+        if active != "archive" and card_record.get("read_error"):
+            self.display_key = self.recorded_source = None
+            self.view_ticket += 1
+            self.set_pending(True)
+            self.archive.set_visibility(False)
+            self.source_note.set_text(f"{card.label} · 선택한 비행 기록을 확인할 수 없습니다. {card_record['read_error']}")
+            return
+        nominal_pin = (card_record.get("nominal_pin") if active != "archive" and card_record.get("nominal_replay")
+                       else None)
+        same_view = self.display_key == identity and not restart
+        supplements = (nominal_pin, active != "archive" and card_record.get("evaluation"))
+        if same_view and self.display_supplements == supplements:
             if self.recorded_source:
                 self.show_recorded_version()
             return
         self.display_key = identity
+        self.display_supplements = supplements
+        keep_view = same_view and self.recorded_source is not None and mode == "v21"
         self.recorded_source = None
         self.view_ticket += 1
         ticket = self.view_ticket
-        self.set_pending(True)
+        if not keep_view:
+            self.set_pending(True)
         self.archive.set_visibility(True)
-        self.source_note.set_text(f"{card.label} · 비행 기록을 불러오는 중")
+        if not keep_view:
+            self.source_note.set_text(f"{card.label} · 비행 기록을 불러오는 중")
         try:
             if active == "archive":
                 open_record = self.replay.open_run if restart else self.replay.select_run
@@ -411,7 +508,10 @@ class RegionalRuns:
                 return
             if not state or state.get("read_error") or state.get("open_error"):
                 raise ValueError((state or {}).get("open_error") or "비행 기록을 읽을 수 없습니다.")
-            expected = applied_pin(records[active]) if active != "archive" and mode == "v21" else key
+            if active == "archive":
+                expected = key
+            else:
+                expected = applied_pin(records[active]) if mode == "v21" else card_record.get("nominal_pin")
             if ((state.get("run_id"), state.get("revision")) != expected or state.get("ticket") != ticket
                     or state.get("loading") or state.get("region") != card.region or state.get("mode") != mode):
                 raise ValueError("선택한 비행과 재생 자료가 일치하지 않습니다.")
@@ -424,4 +524,10 @@ class RegionalRuns:
         except (OSError, ValueError, RuntimeError, KeyError, TimeoutError) as exc:
             if ticket == self.view_ticket:
                 self.archive.set_visibility(False)
-                self.source_note.set_text(f"{card.label} · 비행을 열 수 없습니다. 지역 카드를 눌러 다시 시도하세요. {exc}")
+                if active != "archive" and mode == "nominal" and not card_record.get("nominal_replay"):
+                    note = ("적용 비행의 실험 비교에서 기본 대형 수치를 확인할 수 있습니다."
+                            if "nominal" in card_record else "동일 조건의 비교 기록도 없습니다.")
+                    self.source_note.set_text(
+                        f"{card.label} · 팀 {card_record['sha'][:7]} · 기본 대형 재생 기록 없음. {note}")
+                else:
+                    self.source_note.set_text(f"{card.label} · 비행을 열 수 없습니다. 지역 카드를 눌러 다시 시도하세요. {exc}")
